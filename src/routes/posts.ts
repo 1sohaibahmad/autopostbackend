@@ -6,9 +6,9 @@ import { generatePostForUser } from "../services/postGenerationService";
 
 const router = Router();
 
-router.post("/generate-post", requireAuth, validateRequest({ body: generatePostSchema }), async (req, res, next) => {
+router.post("/generate", requireAuth, validateRequest({ body: generatePostSchema }), async (req, res, next) => {
   try {
-    const response = await generatePostForUser({
+    const generated = await generatePostForUser({
       userId: req.auth!.user.id,
       brandProfileId: req.body.brandProfileId,
       platform: req.body.platform,
@@ -18,10 +18,9 @@ router.post("/generate-post", requireAuth, validateRequest({ body: generatePostS
       customHeadline: req.body.customHeadline,
       trendBriefId: req.body.trendBriefId,
     });
-
-    res.status(200).json(response);
-  } catch (err) {
-    next(err);
+    res.json(generated);
+  } catch (error) {
+    next(error);
   }
 });
 

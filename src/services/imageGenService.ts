@@ -1,8 +1,9 @@
 import Replicate from "replicate";
 import sharp from "sharp";
 import { retryWithBackoff } from "./textGenService";
+import { env } from "../config/env";
 
-const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
+const replicate = new Replicate({ auth: env.replicateApiToken });
 
 // ── Replicate (active) ──────────────────────────────────
 async function generateImageReplicate(imageDirection: string): Promise<string> {

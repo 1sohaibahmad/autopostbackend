@@ -76,8 +76,8 @@ export function buildPostHtml(data: PostTemplateData): string {
 
   /* ── Left panel (colored text area) ── */
   .panel-left {
-    width: 65%;
-    height: 100%;
+    width: 700px;
+    height: 1080px;
     background: ${primary};
     display: flex;
     flex-direction: column;
@@ -85,6 +85,7 @@ export function buildPostHtml(data: PostTemplateData): string {
     padding: 64px 56px 40px 56px;
     position: relative;
     z-index: 2;
+    flex-shrink: 0;
   }
 
   .headline {
@@ -136,16 +137,21 @@ export function buildPostHtml(data: PostTemplateData): string {
 
   /* ── Right panel (photo) ── */
   .panel-right {
-    width: 35%;
-    height: 100%;
+    width: 380px;
+    height: 1080px;
     position: relative;
     overflow: hidden;
+    flex-shrink: 0;
   }
 
   .bg-image {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
+    object-position: center;
     display: block;
   }
 

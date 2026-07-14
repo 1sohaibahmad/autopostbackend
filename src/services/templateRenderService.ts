@@ -1,7 +1,11 @@
 import puppeteer from "puppeteer";
-import { buildPostHtml, type PostTemplateData } from "../templates/postTemplate";
+import { buildHtml, DEFAULT_TEMPLATE, type TemplateId } from "../templates/templateSelector";
+import type { PostTemplateData } from "../templates/templateD";
 
-export async function renderPostImage(data: PostTemplateData): Promise<Buffer> {
+export async function renderPostImage(
+  data: PostTemplateData,
+  templateId: TemplateId = DEFAULT_TEMPLATE
+): Promise<Buffer> {
   let browser;
   try {
     browser = await puppeteer.launch({
@@ -12,7 +16,7 @@ export async function renderPostImage(data: PostTemplateData): Promise<Buffer> {
     const page = await browser.newPage();
     await page.setViewport({ width: 1080, height: 1080, deviceScaleFactor: 1 });
 
-    const html = buildPostHtml(data);
+    const html = buildHtml(templateId, data);
     await page.setContent(html, { waitUntil: "load", timeout: 30000 });
     await page.waitForNetworkIdle({ idleTime: 500 });
 

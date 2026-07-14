@@ -1,17 +1,18 @@
-import { fal } from "@fal-ai/client";
+import Replicate from "replicate";
 import sharp from "sharp";
 import { retryWithBackoff } from "./textGenService";
 
-fal.config({ credentials: process.env.FAL_KEY });
+const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
 
-export async function generateImage(imageDirection: string): Promise<string> {
-  const result = await retryWithBackoff(
+// ── Replicate (active) ──────────────────────────────────
+async function generateImageReplicate(imageDirection: string): Promise<string> {
+  const output = await retryWithBackoff(
     () =>
-      fal.subscribe("fal-ai/flux/dev", {
+      replicate.run("stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc", {
         input: {
           prompt: imageDirection,
-          image_size: "square_hd",
-          num_inference_steps: 28,
+          width: 1344,
+          height: 768,
         },
       }),
     3,
@@ -21,20 +22,65 @@ export async function generateImage(imageDirection: string): Promise<string> {
         const msg = err.message || "";
         if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
         if (msg.includes("503") || msg.includes("overloaded")) return true;
+        if (msg.includes("Director") || msg.includes("unexpected error handling prediction")) return true;
       }
       return false;
     }
   );
 
-  const imageUrl = (result as any).data?.images?.[0]?.url;
-  if (!imageUrl) {
-    throw new Error("fal.ai returned no image URL");
+  console.log("Replicate raw output:", JSON.stringify(output, null, 2));
+  console.log("Replicate output type:", typeof output, Array.isArray(output));
+
+  let finalUrl: string | undefined;
+
+  if (Array.isArray(output) && output.length > 0) {
+    const first = output[0];
+    if (typeof first === "string") {
+      finalUrl = first;
+    } else if (typeof first === "object" && first !== null) {
+      if (typeof (first as any).url === "function") {
+        finalUrl = String(await (first as any).url());
+      } else if ("url" in first && (first as any).url != null) {
+        finalUrl = String((first as any).url);
+      }
+    }
+  } else if (typeof output === "string") {
+    finalUrl = output;
   }
-  return imageUrl;
+
+  if (finalUrl == null) {
+    throw new Error("Unexpected Replicate output format: " + JSON.stringify(output));
+  }
+
+  if (typeof finalUrl !== "string") {
+    throw new Error("Extracted image URL is not a string: " + typeof finalUrl);
+  }
+
+  return finalUrl;
 }
 
-// ── Pollinations fallback (kept for reference) ──────────
-// export function generateImagePollinations(imageDirection: string): string {
+export const generateImage = generateImageReplicate;
+
+// ── fal.ai fallback ─────────────────────────────────────
+// import { fal } from "@fal-ai/client";
+// fal.config({ credentials: process.env.FAL_KEY });
+//
+// async function generateImageFal(imageDirection: string): Promise<string> {
+//   const result = await retryWithBackoff(
+//     () =>
+//       fal.subscribe("fal-ai/flux/dev", {
+//         input: { prompt: imageDirection, image_size: "square_hd", num_inference_steps: 28 },
+//       }),
+//     3, 2000,
+//     (err) => err instanceof Error && (err.message.includes("429") || err.message.includes("503"))
+//   );
+//   const url = (result as any).data?.images?.[0]?.url;
+//   if (!url) throw new Error("fal.ai returned no image URL");
+//   return url;
+// }
+
+// ── Pollinations fallback (free, lower quality) ─────────
+// function generateImagePollinations(imageDirection: string): string {
 //   return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=1024&height=1024&nologo=true&enhance=true`;
 // }
 

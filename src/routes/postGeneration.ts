@@ -30,13 +30,33 @@ router.post("/generate-post", async (req, res) => {
     const backgroundImageUrl = await generateImage(generated.imageDirection);
     const usedHeadline = customHeadline?.trim() || generated.headlineText;
 
+    const subtext = generated.caption.slice(0, 140);
+
+    const features: string[] = [];
+    if (brandProfile.industry) {
+      features.push(brandProfile.industry);
+    }
+    if (postType === "product_promotion") features.push("Featured Product");
+    else if (postType === "how_to") features.push("Step by Step");
+    else if (postType === "announcement") features.push("New Update");
+    else if (postType === "engagement") features.push("Join Us");
+    else if (postType === "review") features.push("Testimonial");
+    else if (postType === "trend_based") features.push("Trending Now");
+    if (platform) features.push(platform.charAt(0).toUpperCase() + platform.slice(1));
+
+    const ctaText = brandProfile.website_url
+      ? brandProfile.website_url.replace(/^https?:\/\//, "").replace(/\/$/, "")
+      : brandProfile.brand_name;
+
     const imageBuffer = await renderPostImage({
       headline: usedHeadline,
-      subtext: generated.caption.slice(0, 120),
+      subtext,
       brandColors: brandProfile.brand_colors ?? [],
       brandLogo: brandProfile.logo_url,
       brandName: brandProfile.brand_name,
       backgroundImageUrl,
+      features: features.slice(0, 3),
+      ctaText,
     });
 
     const filename = `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;

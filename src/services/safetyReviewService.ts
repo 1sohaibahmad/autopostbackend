@@ -21,6 +21,18 @@ export interface SafetyReviewResult {
 const genericPhrases = ["unlock your potential", "game changer", "best solution ever", "revolutionary"];
 const riskyClaimPatterns = [/\bguaranteed\b/i, /\b100%\b/i, /\bno risk\b/i, /\binstant results\b/i];
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsTerm(text: string, term: string): boolean {
+  const cleanedTerm = term.trim();
+  if (!cleanedTerm) return false;
+
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegex(cleanedTerm)}([^a-z0-9]|$)`, "i");
+  return pattern.test(text);
+}
+
 export function reviewSafety(input: SafetyReviewInput): SafetyReviewResult {
   const issues: SafetyIssue[] = [];
   const lowered = input.caption.toLowerCase();
@@ -47,7 +59,7 @@ export function reviewSafety(input: SafetyReviewInput): SafetyReviewResult {
   }
 
   for (const word of input.bannedWords ?? []) {
-    if (word && lowered.includes(word.toLowerCase())) {
+    if (word && containsTerm(lowered, word.toLowerCase())) {
       issues.push({
         category: "brand",
         severity: "high",
@@ -57,7 +69,7 @@ export function reviewSafety(input: SafetyReviewInput): SafetyReviewResult {
   }
 
   for (const topic of input.topicsToAvoid ?? []) {
-    if (topic && lowered.includes(topic.toLowerCase())) {
+    if (topic && containsTerm(lowered, topic.toLowerCase())) {
       issues.push({
         category: "brand",
         severity: "medium",

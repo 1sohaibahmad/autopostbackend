@@ -8,6 +8,44 @@ import { renderPostImage } from "./templateRenderService";
 import { generateCaption } from "./textGenService";
 import { trackUsageEvent } from "./usageMeteringService";
 
+const DAILY_POST_LIMIT = 3;
+
+function getUtcDayWindow(now = new Date()): { start: string; end: string } {
+  const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const endDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+  return {
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+  };
+}
+
+async function enforceDailyPostLimit(userId: string): Promise<void> {
+  const window = getUtcDayWindow();
+
+  const { count, error } = await supabase
+    .from("generations")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .gte("created_at", window.start)
+    .lt("created_at", window.end);
+
+  if (error) {
+    throw new HttpError(500, "Failed to verify daily post usage", "USAGE_LIMIT_CHECK_FAILED", {
+      reason: error.message,
+    });
+  }
+
+  const generatedToday = count ?? 0;
+  if (generatedToday >= DAILY_POST_LIMIT) {
+    throw new HttpError(429, "Daily generation limit reached (3 posts/day)", "DAILY_POST_LIMIT_REACHED", {
+      limit: DAILY_POST_LIMIT,
+      generatedToday,
+      windowStartUtc: window.start,
+      windowEndUtc: window.end,
+    });
+  }
+}
+
 function featureTags(postType: string, industry: string, platform: string): string[] {
   const features: string[] = [];
   if (industry) features.push(industry);
@@ -31,6 +69,8 @@ export async function generatePostForUser(params: {
   customHeadline?: string;
   trendBriefId?: number;
 }) {
+  await enforceDailyPostLimit(params.userId);
+
   const brandProfile = await getBrandProfileForUserById(params.userId, params.brandProfileId);
 
   let trendContext: { summary?: string; adaptationAngle?: string; objective?: string } | undefined;

@@ -25,6 +25,11 @@ type DiscoverySignal = {
   momentumStage?: "rising" | "peaking" | "fading";
   brandSafetyRating?: "safe" | "caution" | "avoid";
   explanation?: string;
+  nicheScore?: number;
+  brandScore?: number;
+  platformBoost?: number;
+  sourceBoost?: number;
+  freshnessBoost?: number;
 };
 
 type TrendExample = {
@@ -43,7 +48,7 @@ type DiscoveryResult = {
   data: DiscoverySignal[];
 };
 
-const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+const DISCOVERY_CACHE_TTL_MS = 60 * 1000;
 const discoveryCache = new Map<string, { expiresAt: number; value: DiscoveryResult }>();
 
 async function rerankSignalsWithAi(params: {
@@ -274,7 +279,12 @@ async function discoverFromHackerNews(region: string, language: string): Promise
   const xml = await fetchText("https://news.ycombinator.com/rss");
   return parseRssItems(xml)
     .slice(0, 25)
-    .map((item) => signalFromRss({ source: "hackernews", item, region, language }));
+    .map((item) => {
+      const signal = signalFromRss({ source: "hackernews", item, region, language });
+      signal.platformHints = ["linkedin", "x", ...signal.platformHints].slice(0, 4);
+      signal.velocityScore = Math.max(signal.velocityScore, 70);
+      return signal;
+    });
 }
 
 async function discoverFromProductHunt(region: string, language: string): Promise<DiscoverySignal[]> {
@@ -299,7 +309,37 @@ async function discoverFromGoogleNews(niche: string | undefined, region: string,
   return settled
     .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
     .flatMap((result) => parseRssItems(result.value).slice(0, 20))
-    .map((item) => signalFromRss({ source: "google_news", item, region, language }));
+    .map((item) => {
+      const signal = signalFromRss({ source: "google_news", item, region, language });
+      signal.platformHints = ["linkedin", "x", "instagram", ...signal.platformHints].slice(0, 5);
+      return signal;
+    });
+}
+
+async function discoverFromPlatformPulse(
+  platform: string | undefined,
+  niche: string | undefined,
+  region: string,
+  language: string
+): Promise<DiscoverySignal[]> {
+  if (!platform) return [];
+
+  const geos = region.toLowerCase() === "global" ? ["US", "GB", "IN", "CA"] : [region.toUpperCase()];
+  const query = encodeURIComponent(`${platform} trend ${niche || ""}`.trim());
+
+  const settled = await Promise.allSettled(
+    geos.map((geo) => fetchText(`https://news.google.com/rss/search?q=${query}&hl=en&gl=${geo}&ceid=${geo}:en`))
+  );
+
+  return settled
+    .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+    .flatMap((result) => parseRssItems(result.value).slice(0, 20))
+    .map((item) => {
+      const signal = signalFromRss({ source: "platform_pulse", item, region, language });
+      signal.platformHints = [platform, ...signal.platformHints].filter(Boolean).slice(0, 6) as string[];
+      signal.velocityScore = Math.max(signal.velocityScore, 68);
+      return signal;
+    });
 }
 
 async function discoverFromGoogleTrends(region: string, language: string): Promise<DiscoverySignal[]> {
@@ -376,12 +416,17 @@ function sourceTasksForPlatform(params: { niche?: string; region: string; langua
   ];
 
   if (params.platform === "instagram" || params.platform === "facebook" || params.platform === "tiktok" || params.platform === "pinterest") {
-    return [...socialFirst, () => discoverFromGoogleNews(params.niche, params.region, params.language)];
+    return [
+      ...socialFirst,
+      () => discoverFromPlatformPulse(params.platform, params.niche, params.region, params.language),
+      () => discoverFromGoogleNews(params.niche, params.region, params.language),
+    ];
   }
 
   if (params.platform === "linkedin" || params.platform === "x") {
     return [
       ...socialFirst,
+      () => discoverFromPlatformPulse(params.platform, params.niche, params.region, params.language),
       () => discoverFromProductHunt(params.region, params.language),
       () => discoverFromDevTo(params.region, params.language),
       () => discoverFromHackerNews(params.region, params.language),
@@ -391,6 +436,7 @@ function sourceTasksForPlatform(params: { niche?: string; region: string; langua
 
   return [
     ...socialFirst,
+    () => discoverFromPlatformPulse(params.platform, params.niche, params.region, params.language),
     () => discoverFromProductHunt(params.region, params.language),
     () => discoverFromHackerNews(params.region, params.language),
     () => discoverFromGoogleNews(params.niche, params.region, params.language),
@@ -467,7 +513,18 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
   const nicheScore = nicheTokens.size ? overlapScore(nicheTokens, signalTokens) : 40;
   const brandScore = contextTokens.size ? overlapScore(contextTokens, signalTokens) : 50;
   const platformBoost = platform && signal.platformHints.includes(platform) ? 12 : 0;
-  const sourceBoost = ["reddit", "mastodon"].includes(signal.source) ? 8 : ["google_news"].includes(signal.source) ? -4 : 0;
+  const sourceBoost =
+    signal.source === "platform_pulse"
+      ? 10
+      : signal.source === "reddit"
+      ? 6
+      : signal.source === "hackernews" || signal.source === "producthunt" || signal.source === "devto"
+      ? 5
+      : signal.source === "mastodon"
+      ? 1
+      : signal.source === "google_news"
+      ? -3
+      : 0;
   const freshnessBoost = signal.publishedAt
     ? Math.max(0, 10 - Math.floor((Date.now() - new Date(signal.publishedAt).getTime()) / (1000 * 60 * 60 * 3)))
     : 0;
@@ -477,6 +534,11 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
   return {
     ...signal,
     relevanceScore: relevance,
+    nicheScore,
+    brandScore,
+    platformBoost,
+    sourceBoost,
+    freshnessBoost,
     reasons: [
       `niche_match:${nicheScore}`,
       `brand_match:${brandScore}`,
@@ -600,8 +662,25 @@ export async function discoverTrendSignals(params: {
     ? classified.filter((signal) => signal.platformHints.includes(params.platform!) || ["reddit", "mastodon"].includes(signal.source))
     : classified;
 
+  const hasIntentSignals = Boolean(params.niche?.trim()) || contextTokens.size > 0;
+  const relevanceFloor = hasIntentSignals ? 55 : 45;
+  const qualityFiltered = platformFiltered.filter((signal) => {
+    if (signal.relevanceScore < relevanceFloor) return false;
+
+    if (params.platform === "linkedin") {
+      const hasBusinessFit = (signal.nicheScore ?? 0) > 0 || (signal.brandScore ?? 0) > 0;
+      const trustedLinkedinSources = ["hackernews", "producthunt", "devto", "reddit", "google_news"];
+      if (!hasBusinessFit && !trustedLinkedinSources.includes(signal.source)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+
   const buckets = new Map<string, DiscoverySignal[]>();
-  for (const signal of platformFiltered) {
+  const pool = qualityFiltered.length ? qualityFiltered : platformFiltered;
+  for (const signal of pool) {
     const list = buckets.get(signal.source) ?? [];
     list.push(signal);
     buckets.set(signal.source, list);
@@ -626,9 +705,9 @@ export async function discoverTrendSignals(params: {
 
   const result = {
     generatedAt: new Date().toISOString(),
-    sourcesUsed: Array.from(new Set((diversified.length ? diversified : platformFiltered.slice(0, params.limit)).map((item) => item.source))),
+    sourcesUsed: Array.from(new Set((diversified.length ? diversified : pool.slice(0, params.limit)).map((item) => item.source))),
     fallbackCount: settled.filter((s) => s.status === "rejected").length,
-    data: diversified.length ? diversified : platformFiltered.slice(0, params.limit),
+    data: diversified.length ? diversified : pool.slice(0, params.limit),
   };
 
   discoveryCache.set(cacheKey, {

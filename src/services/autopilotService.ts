@@ -142,9 +142,9 @@ export async function runAutopilot(params: {
   });
 
   const fallbackMatches = discovered.data
-    .filter((signal) => signal.brandSafetyRating !== "avoid")
+    .filter((signal: { brandSafetyRating?: string }) => signal.brandSafetyRating !== "avoid")
     .slice(0, Math.max(effectiveMaxDrafts, 1))
-    .map((signal) => ({
+    .map((signal: { externalId: string; relevanceScore: number; title: string; description: string }) => ({
       id: `fallback-${signal.externalId}`,
       relevance_score: signal.relevanceScore,
       trend_signals: {

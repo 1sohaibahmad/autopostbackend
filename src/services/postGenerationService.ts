@@ -6,6 +6,7 @@ import { getBrandProfileForUserById } from "./brandProfileService";
 import { reviewSafety } from "./safetyReviewService";
 import { renderPostImage } from "./templateRenderService";
 import { generateCaption } from "./textGenService";
+import { fetchTrendExamples } from "./trendSignalService";
 import { trackUsageEvent } from "./usageMeteringService";
 
 const DAILY_POST_LIMIT = 3;
@@ -145,8 +146,24 @@ export async function generatePostForUser(params: {
       const topTags = Array.from(new Set(ranked.flatMap((s: any) => s.tags ?? []))).slice(0, 8);
       trendReferences = ranked.slice(0, 5).map((s: any) => ({ id: Number(s.id), title: String(s.title), source: s.source ?? undefined, url: s.url ?? undefined }));
 
+      let enrichedSummary = `Live trend bundle:\n${summaryLines.join("\n")}`;
+
+      try {
+        const examples = await fetchTrendExamples({
+          trendTitle: String(ranked[0]?.title ?? params.topic),
+          platform: params.platform,
+          limit: 2,
+        });
+        if (examples.length) {
+          const exampleLines = examples.map((item) => `- ${item.title} (${item.source})`).join("\n");
+          enrichedSummary = `${enrichedSummary}\n\nRecent real examples:\n${exampleLines}`;
+        }
+      } catch {
+        // best-effort enrichment only
+      }
+
       trendContext = {
-        summary: `Live trend bundle:\n${summaryLines.join("\n")}`,
+        summary: enrichedSummary,
         adaptationAngle: topTags.length ? `Lean into these themes: ${topTags.join(", ")}` : "Prioritize fast-moving conversation hooks.",
         objective: params.objective ?? "engagement",
       };

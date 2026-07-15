@@ -203,6 +203,7 @@ Rules:
 - If post type is holiday_occasion, tie the message to a specific occasion naturally.
 - For trend-based content, riff on trend ideas without copying copyrighted assets, logos, celebrity faces, album art, or lyrics.
 - imageDirection must clearly reflect trend cues when available (color palette, composition style, mood), while staying original and IP-safe.
+- When Trend Summary includes real examples, mirror the structure and energy of the trend (hook style, cadence, visual pattern) without copying exact text.
 - If refinement instruction is present, prioritize it over prior style assumptions while remaining brand-safe.
 
 Respond with ONLY JSON in this exact format:

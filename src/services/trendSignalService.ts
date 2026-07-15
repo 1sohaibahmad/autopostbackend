@@ -36,6 +36,16 @@ type TrendExample = {
   engagementHint?: string;
 };
 
+type DiscoveryResult = {
+  generatedAt: string;
+  sourcesUsed: string[];
+  fallbackCount: number;
+  data: DiscoverySignal[];
+};
+
+const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+const discoveryCache = new Map<string, { expiresAt: number; value: DiscoveryResult }>();
+
 async function rerankSignalsWithAi(params: {
   rankedSignals: DiscoverySignal[];
   niche?: string;
@@ -234,6 +244,7 @@ function signalFromRss(params: {
 
 async function fetchText(url: string): Promise<string> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(6500),
     headers: {
       "user-agent": "autopostbackend/1.0 (trend-engine)",
       accept: "application/json, application/rss+xml, application/xml, text/xml, text/plain",
@@ -247,6 +258,7 @@ async function fetchText(url: string): Promise<string> {
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(6500),
     headers: {
       "user-agent": "autopostbackend/1.0 (trend-engine)",
       accept: "application/json",
@@ -278,10 +290,31 @@ async function discoverFromProductHunt(region: string, language: string): Promis
 
 async function discoverFromGoogleNews(niche: string | undefined, region: string, language: string): Promise<DiscoverySignal[]> {
   const query = encodeURIComponent(`${niche || "marketing"} trends`);
-  const xml = await fetchText(`https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`);
-  return parseRssItems(xml)
-    .slice(0, 25)
+  const geos = region.toLowerCase() === "global" ? ["US", "GB", "IN", "CA", "AU", "DE", "BR", "JP"] : [region.toUpperCase()];
+
+  const settled = await Promise.allSettled(
+    geos.map((geo) => fetchText(`https://news.google.com/rss/search?q=${query}&hl=en&gl=${geo}&ceid=${geo}:en`))
+  );
+
+  return settled
+    .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+    .flatMap((result) => parseRssItems(result.value).slice(0, 20))
     .map((item) => signalFromRss({ source: "google_news", item, region, language }));
+}
+
+async function discoverFromGoogleTrends(region: string, language: string): Promise<DiscoverySignal[]> {
+  const geos = region.toLowerCase() === "global" ? ["US", "GB", "IN", "CA", "AU", "DE", "BR", "JP"] : [region.toUpperCase()];
+  const settled = await Promise.allSettled(geos.map((geo) => fetchText(`https://trends.google.com/trending/rss?geo=${geo}`)));
+
+  return settled
+    .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+    .flatMap((result) => parseRssItems(result.value).slice(0, 20))
+    .map((item) => {
+      const signal = signalFromRss({ source: "google_trends", item, region, language });
+      signal.platformHints = ["instagram", "x", "linkedin", "tiktok", "facebook", "pinterest"];
+      signal.velocityScore = Math.max(signal.velocityScore, 72);
+      return signal;
+    });
 }
 
 async function discoverFromDevTo(region: string, language: string): Promise<DiscoverySignal[]> {
@@ -335,7 +368,44 @@ async function discoverFromMastodon(region: string, language: string): Promise<D
   });
 }
 
-function redditSubredditsForNiche(niche?: string): string[] {
+function sourceTasksForPlatform(params: { niche?: string; region: string; language: string; platform?: string }) {
+  const socialFirst = [
+    () => discoverFromReddit(params.niche, params.region, params.language, params.platform),
+    () => discoverFromMastodon(params.region, params.language),
+    () => discoverFromGoogleTrends(params.region, params.language),
+  ];
+
+  if (params.platform === "instagram" || params.platform === "facebook" || params.platform === "tiktok" || params.platform === "pinterest") {
+    return [...socialFirst, () => discoverFromGoogleNews(params.niche, params.region, params.language)];
+  }
+
+  if (params.platform === "linkedin" || params.platform === "x") {
+    return [
+      ...socialFirst,
+      () => discoverFromProductHunt(params.region, params.language),
+      () => discoverFromDevTo(params.region, params.language),
+      () => discoverFromHackerNews(params.region, params.language),
+      () => discoverFromGoogleNews(params.niche, params.region, params.language),
+    ];
+  }
+
+  return [
+    ...socialFirst,
+    () => discoverFromProductHunt(params.region, params.language),
+    () => discoverFromHackerNews(params.region, params.language),
+    () => discoverFromGoogleNews(params.niche, params.region, params.language),
+    () => discoverFromDevTo(params.region, params.language),
+  ];
+}
+
+function redditSubredditsForNiche(niche?: string, platform?: string): string[] {
+  if (platform === "instagram") return ["Instagram", "socialmedia", "marketing", "smallbusiness"];
+  if (platform === "linkedin") return ["linkedin", "marketing", "sales", "Entrepreneur"];
+  if (platform === "x") return ["Twitter", "socialmedia", "technology", "marketing"];
+  if (platform === "tiktok") return ["TikTok", "socialmedia", "marketing", "smallbusiness"];
+  if (platform === "facebook") return ["FacebookAds", "facebook", "marketing", "smallbusiness"];
+  if (platform === "pinterest") return ["Pinterest", "Etsy", "marketing", "smallbusiness"];
+
   const n = (niche ?? "").toLowerCase();
   if (/(saas|startup|b2b|product)/.test(n)) return ["startups", "Entrepreneur", "SaaS", "marketing"];
   if (/(ai|ml|artificial intelligence|automation)/.test(n)) return ["artificial", "MachineLearning", "singularity", "OpenAI"];
@@ -344,8 +414,8 @@ function redditSubredditsForNiche(niche?: string): string[] {
   return ["marketing", "socialmedia", "technology", "entrepreneur"];
 }
 
-async function discoverFromReddit(niche: string | undefined, region: string, language: string): Promise<DiscoverySignal[]> {
-  const subreddits = redditSubredditsForNiche(niche);
+async function discoverFromReddit(niche: string | undefined, region: string, language: string, platform?: string): Promise<DiscoverySignal[]> {
+  const subreddits = redditSubredditsForNiche(niche, platform);
   const settled = await Promise.allSettled(
     subreddits.map((subreddit) =>
       fetchJson<{
@@ -455,7 +525,22 @@ export async function discoverTrendSignals(params: {
   language: string;
   region: string;
   brandProfileId?: number;
-}) {
+}): Promise<DiscoveryResult> {
+  const cacheKey = JSON.stringify({
+    userId: params.userId,
+    limit: params.limit,
+    niche: params.niche ?? "",
+    platform: params.platform ?? "",
+    language: params.language,
+    region: params.region,
+    brandProfileId: params.brandProfileId ?? 0,
+  });
+
+  const cached = discoveryCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   let contextTokens = new Set<string>();
   let brandContextSummary = "";
   if (params.brandProfileId) {
@@ -476,14 +561,7 @@ export async function discoverTrendSignals(params: {
 
   const nicheTokens = tokenize(params.niche ?? "");
 
-  const settled = await Promise.allSettled([
-    discoverFromProductHunt(params.region, params.language),
-    discoverFromHackerNews(params.region, params.language),
-    discoverFromGoogleNews(params.niche, params.region, params.language),
-    discoverFromDevTo(params.region, params.language),
-    discoverFromReddit(params.niche, params.region, params.language),
-    discoverFromMastodon(params.region, params.language),
-  ]);
+  const settled = await Promise.allSettled(sourceTasksForPlatform(params).map((task) => task()));
 
   const merged = settled
     .filter((s): s is PromiseFulfilledResult<DiscoverySignal[]> => s.status === "fulfilled")
@@ -518,12 +596,47 @@ export async function discoverTrendSignals(params: {
 
   const classified = ranked.map((signal) => classifyTrendSignal(signal, params.niche, params.platform));
 
-  return {
+  const platformFiltered = params.platform
+    ? classified.filter((signal) => signal.platformHints.includes(params.platform!) || ["reddit", "mastodon"].includes(signal.source))
+    : classified;
+
+  const buckets = new Map<string, DiscoverySignal[]>();
+  for (const signal of platformFiltered) {
+    const list = buckets.get(signal.source) ?? [];
+    list.push(signal);
+    buckets.set(signal.source, list);
+  }
+
+  const diversified: DiscoverySignal[] = [];
+  const sources = Array.from(buckets.keys());
+  let cursor = 0;
+  while (diversified.length < params.limit && sources.length) {
+    const source = sources[cursor % sources.length];
+    const list = buckets.get(source) ?? [];
+    const next = list.shift();
+    if (next) diversified.push(next);
+    if (!list.length) {
+      buckets.delete(source);
+      sources.splice(cursor % sources.length, 1);
+      if (!sources.length) break;
+      continue;
+    }
+    cursor += 1;
+  }
+
+  const result = {
     generatedAt: new Date().toISOString(),
-    sourcesUsed: ["producthunt", "hackernews", "google_news", "devto", "reddit", "mastodon"],
+    sourcesUsed: Array.from(new Set((diversified.length ? diversified : platformFiltered.slice(0, params.limit)).map((item) => item.source))),
     fallbackCount: settled.filter((s) => s.status === "rejected").length,
-    data: classified.slice(0, params.limit),
+    data: diversified.length ? diversified : platformFiltered.slice(0, params.limit),
   };
+
+  discoveryCache.set(cacheKey, {
+    expiresAt: Date.now() + DISCOVERY_CACHE_TTL_MS,
+    value: result,
+  });
+
+  return result;
 }
 
 export async function fetchTrendExamples(params: {

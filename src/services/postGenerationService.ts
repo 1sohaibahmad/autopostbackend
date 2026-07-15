@@ -10,7 +10,7 @@ import { fetchTrendExamples } from "./trendSignalService";
 import { trackUsageEvent } from "./usageMeteringService";
 import { runFinalSafetyJudge } from "./finalSafetyJudgeService";
 
-const DAILY_POST_LIMIT = 3;
+const DAILY_POST_LIMIT = 5;
 
 function getUtcDayWindow(now = new Date()): { start: string; end: string } {
   const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
@@ -39,7 +39,7 @@ async function enforceDailyPostLimit(userId: string): Promise<void> {
 
   const generatedToday = count ?? 0;
   if (generatedToday >= DAILY_POST_LIMIT) {
-    throw new HttpError(429, "Daily generation limit reached (3 posts/day)", "DAILY_POST_LIMIT_REACHED", {
+    throw new HttpError(429, `Daily generation limit reached (${DAILY_POST_LIMIT} posts/day)`, "DAILY_POST_LIMIT_REACHED", {
       limit: DAILY_POST_LIMIT,
       generatedToday,
       windowStartUtc: window.start,
@@ -103,6 +103,51 @@ function combineRefinementInstruction(userInstruction: string | undefined, force
   const forced = forcedInstruction?.trim();
   if (user && forced) return `${user}\n\n${forced}`;
   return user || forced || undefined;
+}
+
+function imageDimensionsForPlatform(platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest"): {
+  width: number;
+  height: number;
+} {
+  if (platform === "instagram") return { width: 1080, height: 1350 };
+  if (platform === "linkedin") return { width: 1200, height: 1200 };
+  if (platform === "facebook") return { width: 1200, height: 630 };
+  if (platform === "x") return { width: 1600, height: 900 };
+  if (platform === "tiktok") return { width: 1080, height: 1920 };
+  if (platform === "pinterest") return { width: 1000, height: 1500 };
+  return { width: 1080, height: 1350 };
+}
+
+function marketingImageDirection(params: {
+  baseDirection: string;
+  platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest";
+  generationMode: "auto" | "native_ai" | "with_text" | "structured_layout";
+  brandName: string;
+  industry: string;
+}): string {
+  const compositionHint = params.generationMode === "with_text" || params.generationMode === "structured_layout"
+    ? "Reserve clean negative space in upper third for headline overlay"
+    : "Compose for native social feed impact";
+
+  return [
+    params.baseDirection,
+    `Commercial marketing creative for ${params.brandName} in ${params.industry}`,
+    "Photorealistic style, 1-3 natural human subjects, authentic expressions, realistic hands and skin texture",
+    "High production ad lighting, clean background separation, premium camera depth",
+    `${compositionHint} for ${params.platform}`,
+    "Brand-safe and IP-safe: no logos, no celebrity likeness, no trademarked characters, no copyrighted art",
+  ].join(". ");
+}
+
+function extractUnsafeReferences(issues: Array<{ message: string }>): string[] {
+  const tokens = new Set<string>();
+  for (const issue of issues) {
+    const quoted = issue.message.match(/['\"]([^'\"]{2,60})['\"]/g) ?? [];
+    for (const raw of quoted) {
+      tokens.add(raw.replace(/^['\"]|['\"]$/g, "").trim());
+    }
+  }
+  return Array.from(tokens).slice(0, 6);
 }
 
 interface PersistGenerationRowInput {
@@ -336,7 +381,16 @@ export async function generatePostForUser(params: {
       }
     );
 
-    const baseImage = await generateImage(generated.imageDirection);
+    const imageDirection = marketingImageDirection({
+      baseDirection: generated.imageDirection,
+      platform: params.platform,
+      generationMode,
+      brandName: brandProfile.brand_name,
+      industry: brandProfile.industry,
+    });
+    generated.imageDirection = imageDirection;
+
+    const baseImage = await generateImage(imageDirection, imageDimensionsForPlatform(params.platform));
     const usedHeadline = params.customHeadline?.trim() || generated.headlineText;
     const formatted = formatForPlatform(params.platform, generated.caption, generated.hashtags);
     const safety = reviewSafety({
@@ -389,7 +443,7 @@ export async function generatePostForUser(params: {
       platform: params.platform,
       caption: formatted.caption,
       hashtags: formatted.hashtags,
-      imageDirection: generated.imageDirection,
+      imageDirection,
       trendSummary: trendContext?.summary,
       bannedWords: brandProfile.banned_words,
       topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
@@ -415,6 +469,8 @@ export async function generatePostForUser(params: {
   let parentGenerationId: number | undefined;
 
   if (!firstAttempt.finalJudge.passed) {
+    const disallowedRefs = extractUnsafeReferences(firstAttempt.finalJudge.issues);
+    const refBlock = disallowedRefs.length ? ` Do not mention or imply these references: ${disallowedRefs.join(", ")}.` : "";
     const firstAttemptCostUsd = estimateGenerationCostUsd({
       provider: firstAttempt.baseImage.provider,
       promptLength: firstAttempt.generated.promptUsed.length,
@@ -437,7 +493,7 @@ export async function generatePostForUser(params: {
 
     activeAttempt = await createAttempt(
       1,
-      "Regenerate with stricter safety and originality. Avoid copyrighted characters, logos, slogans, lyrics, and trademarked visual motifs."
+      `Regenerate with stricter safety and originality. Avoid copyrighted characters, logos, slogans, lyrics, trademarked visual motifs, and celebrity references.${refBlock}`
     );
   }
 

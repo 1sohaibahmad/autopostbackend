@@ -51,6 +51,8 @@ Decision rules:
 - Fail if there is likely copyright/trademark/personality-right risk.
 - Fail if there are unsafe or unverifiable claims.
 - Fail if banned words or avoided topics are present.
+- Mark IP severity as high ONLY for explicit protected names, logos, exact slogans, or clear celebrity likeness requests.
+- Generic style words like "inspired", "vibe", "energy" without explicit protected names should be medium or low.
 - High severity means hard fail.
 
 JSON schema:

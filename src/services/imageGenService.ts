@@ -6,7 +6,12 @@ import { env } from "../config/env";
 const replicate = env.replicateApiToken ? new Replicate({ auth: env.replicateApiToken }) : null;
 
 // ── Replicate (active) ──────────────────────────────────
-async function generateImageReplicate(imageDirection: string): Promise<string> {
+export interface ImageGenerationOptions {
+  width?: number;
+  height?: number;
+}
+
+async function generateImageReplicate(imageDirection: string, options?: ImageGenerationOptions): Promise<string> {
   if (!replicate) {
     throw new Error("REPLICATE_API_TOKEN is not configured");
   }
@@ -16,8 +21,12 @@ async function generateImageReplicate(imageDirection: string): Promise<string> {
       replicate.run("stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc", {
         input: {
           prompt: imageDirection,
-          width: 1344,
-          height: 768,
+          negative_prompt:
+            "cartoon, anime, illustration, lowres, blurry, deformed face, malformed hands, extra fingers, watermark, logo, text, celebrity likeness, trademarked character",
+          num_inference_steps: 40,
+          guidance_scale: 7.5,
+          width: options?.width ?? 1080,
+          height: options?.height ?? 1350,
         },
       }),
     3,
@@ -61,8 +70,8 @@ async function generateImageReplicate(imageDirection: string): Promise<string> {
   return finalUrl;
 }
 
-function generateImagePollinations(imageDirection: string): string {
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=1344&height=768&nologo=true&enhance=true`;
+function generateImagePollinations(imageDirection: string, options?: ImageGenerationOptions): string {
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=${options?.width ?? 1080}&height=${options?.height ?? 1350}&nologo=true&enhance=true`;
 }
 
 export interface GeneratedImage {
@@ -71,9 +80,9 @@ export interface GeneratedImage {
   model: string;
 }
 
-export async function generateImage(imageDirection: string): Promise<GeneratedImage> {
+export async function generateImage(imageDirection: string, options?: ImageGenerationOptions): Promise<GeneratedImage> {
   try {
-    const url = await generateImageReplicate(imageDirection);
+    const url = await generateImageReplicate(imageDirection, options);
     return {
       url,
       provider: "replicate",
@@ -81,7 +90,7 @@ export async function generateImage(imageDirection: string): Promise<GeneratedIm
     };
   } catch {
     return {
-      url: generateImagePollinations(imageDirection),
+      url: generateImagePollinations(imageDirection, options),
       provider: "pollinations",
       model: "pollinations/image",
     };

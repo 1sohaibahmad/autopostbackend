@@ -203,7 +203,10 @@ Rules:
 - If post type is comparison, avoid defamatory or unverifiable competitor claims.
 - If post type is holiday_occasion, tie the message to a specific occasion naturally.
 - For trend-based content, riff on trend ideas without copying copyrighted assets, logos, celebrity faces, album art, or lyrics.
+- Never reference celebrities, public figures, trademarked franchises, song lyrics, or branded slogans.
 - imageDirection must clearly reflect trend cues when available (color palette, composition style, mood), while staying original and IP-safe.
+- imageDirection must describe a marketing-grade, photorealistic scene with real human presence (1-3 people), authentic expression, natural skin texture, clean composition, and ad-quality lighting.
+- If text overlay is needed later, compose imageDirection with intentional negative space for headline placement.
 - When Trend Summary includes real examples, mirror the structure and energy of the trend (hook style, cadence, visual pattern) without copying exact text.
 - If refinement instruction is present, prioritize it over prior style assumptions while remaining brand-safe.
 

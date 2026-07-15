@@ -155,12 +155,18 @@ export async function generateCaption(
     summary?: string;
     adaptationAngle?: string;
     objective?: string;
+  },
+  generationContext?: {
+    objective?: "awareness" | "engagement" | "leads" | "sales";
+    audienceSegment?: string;
+    proofPoints?: string[];
   }
 ): Promise<GeneratedContent> {
   const productHints =
     (brandProfile.products ?? []).slice(0, 5).map((p) => `${p.name}: ${p.description}`).join("\n") || "None provided";
   const avoidTopics = (brandProfile.topics_to_avoid ?? []).join(", ") || "None provided";
   const bannedWords = (brandProfile.banned_words ?? []).join(", ") || "None provided";
+  const proofPoints = (generationContext?.proofPoints ?? []).slice(0, 8).join("; ") || "None provided";
 
   const prompt = `You are an elite social growth strategist.
 
@@ -179,6 +185,9 @@ Tone: ${tone}
 Trend Summary: ${trendContext?.summary ?? "None"}
 Trend Adaptation Angle: ${trendContext?.adaptationAngle ?? "None"}
 Objective: ${trendContext?.objective ?? "engagement"}
+Primary Objective: ${generationContext?.objective ?? trendContext?.objective ?? "engagement"}
+Audience Segment: ${generationContext?.audienceSegment ?? "Default brand audience"}
+Proof Points: ${proofPoints}
 
 Create high-quality, specific and non-generic content.
 Rules:
@@ -186,6 +195,7 @@ Rules:
 - Avoid cliches and vague motivational language.
 - Keep it platform-native and brand-safe.
 - Respect banned words and topics to avoid.
+- Incorporate the proof points naturally when relevant.
 
 Respond with ONLY JSON in this exact format:
 {

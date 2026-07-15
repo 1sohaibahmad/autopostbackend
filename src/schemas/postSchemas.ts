@@ -12,4 +12,5 @@ export const generatePostSchema = z.object({
   proofPoints: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
   customHeadline: z.string().trim().max(120).optional(),
   trendBriefId: z.coerce.number().int().positive().optional(),
+  trendSignalIds: z.array(z.coerce.number().int().positive()).max(5).default([]),
 });

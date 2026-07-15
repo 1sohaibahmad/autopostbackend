@@ -3,10 +3,14 @@ import sharp from "sharp";
 import { retryWithBackoff } from "./textGenService";
 import { env } from "../config/env";
 
-const replicate = new Replicate({ auth: env.replicateApiToken });
+const replicate = env.replicateApiToken ? new Replicate({ auth: env.replicateApiToken }) : null;
 
 // ── Replicate (active) ──────────────────────────────────
 async function generateImageReplicate(imageDirection: string): Promise<string> {
+  if (!replicate) {
+    throw new Error("REPLICATE_API_TOKEN is not configured");
+  }
+
   const output = await retryWithBackoff(
     () =>
       replicate.run("stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc", {
@@ -28,9 +32,6 @@ async function generateImageReplicate(imageDirection: string): Promise<string> {
       return false;
     }
   );
-
-  console.log("Replicate raw output:", JSON.stringify(output, null, 2));
-  console.log("Replicate output type:", typeof output, Array.isArray(output));
 
   let finalUrl: string | undefined;
 
@@ -60,7 +61,17 @@ async function generateImageReplicate(imageDirection: string): Promise<string> {
   return finalUrl;
 }
 
-export const generateImage = generateImageReplicate;
+function generateImagePollinations(imageDirection: string): string {
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=1344&height=768&nologo=true&enhance=true`;
+}
+
+export async function generateImage(imageDirection: string): Promise<string> {
+  try {
+    return await generateImageReplicate(imageDirection);
+  } catch {
+    return generateImagePollinations(imageDirection);
+  }
+}
 
 // ── fal.ai fallback ─────────────────────────────────────
 // import { fal } from "@fal-ai/client";

@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth";
 import { validateRequest } from "../middleware/validate";
-import { ingestTrendSignalsSchema, listTrendSignalsQuerySchema } from "../schemas/agenticSchemas";
+import { discoverTrendSignalsQuerySchema, ingestTrendSignalsSchema, listTrendSignalsQuerySchema } from "../schemas/agenticSchemas";
 import { createTrendBriefSchema } from "../schemas/trendSchemas";
 import { createTrendAdaptationBrief } from "../services/trendAdaptationService";
-import { ingestTrendSignals, listTrendSignals } from "../services/trendSignalService";
+import { discoverTrendSignals, ingestTrendSignals, listTrendSignals } from "../services/trendSignalService";
 
 const router = Router();
 
@@ -37,9 +37,29 @@ router.get("/signals", requireAuth, validateRequest({ query: listTrendSignalsQue
   try {
     const data = await listTrendSignals(req.auth!.user.id, {
       source: req.query.source as string | undefined,
+      platform: req.query.platform as string | undefined,
+      minVelocity: req.query.minVelocity ? Number(req.query.minVelocity) : undefined,
+      q: req.query.q as string | undefined,
       limit: Number(req.query.limit),
     });
     res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/signals/discover", requireAuth, validateRequest({ query: discoverTrendSignalsQuerySchema }), async (req, res, next) => {
+  try {
+    const data = await discoverTrendSignals({
+      userId: req.auth!.user.id,
+      limit: Number(req.query.limit),
+      niche: req.query.niche as string | undefined,
+      platform: req.query.platform as string | undefined,
+      language: String(req.query.language),
+      region: String(req.query.region),
+      brandProfileId: req.query.brandProfileId ? Number(req.query.brandProfileId) : undefined,
+    });
+    res.json(data);
   } catch (error) {
     next(error);
   }

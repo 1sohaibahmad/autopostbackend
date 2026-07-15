@@ -66,8 +66,12 @@ export async function generatePostForUser(params: {
   postType: "product_promotion" | "trend_based" | "how_to" | "announcement" | "review" | "engagement";
   topic: string;
   tone: string;
+  objective?: "awareness" | "engagement" | "leads" | "sales";
+  audienceSegment?: string;
+  proofPoints?: string[];
   customHeadline?: string;
   trendBriefId?: number;
+  trendSignalIds?: number[];
 }) {
   await enforceDailyPostLimit(params.userId);
 
@@ -90,6 +94,26 @@ export async function generatePostForUser(params: {
     }
   }
 
+  if (!trendContext && params.trendSignalIds?.length) {
+    const { data: selectedSignals } = await supabase
+      .from("trend_signals")
+      .select("id,title,description,tags,velocity_score")
+      .eq("user_id", params.userId)
+      .in("id", params.trendSignalIds);
+
+    if (selectedSignals?.length) {
+      const ranked = [...selectedSignals].sort((a, b) => (Number(b.velocity_score) || 0) - (Number(a.velocity_score) || 0));
+      const summaryLines = ranked.slice(0, 3).map((s) => `- ${s.title}: ${String(s.description).slice(0, 180)}`);
+      const topTags = Array.from(new Set(ranked.flatMap((s: any) => s.tags ?? []))).slice(0, 8);
+
+      trendContext = {
+        summary: `Live trend bundle:\n${summaryLines.join("\n")}`,
+        adaptationAngle: topTags.length ? `Lean into these themes: ${topTags.join(", ")}` : "Prioritize fast-moving conversation hooks.",
+        objective: params.objective ?? "engagement",
+      };
+    }
+  }
+
   const generated = await generateCaption(
     {
       brand_name: brandProfile.brand_name,
@@ -104,7 +128,12 @@ export async function generatePostForUser(params: {
     params.postType,
     params.topic,
     params.tone,
-    trendContext
+    trendContext,
+    {
+      objective: params.objective,
+      audienceSegment: params.audienceSegment,
+      proofPoints: params.proofPoints,
+    }
   );
 
   const backgroundImageUrl = await generateImage(generated.imageDirection);

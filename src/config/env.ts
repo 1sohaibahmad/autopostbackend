@@ -16,7 +16,7 @@ export const env = {
   appVersion: process.env.APP_VERSION ?? "0.1.0",
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
   openAiApiKey: required("OPENAI_API_KEY"),
-  replicateApiToken: required("REPLICATE_API_TOKEN"),
+  replicateApiToken: process.env.REPLICATE_API_TOKEN,
   supabaseUrl: required("SUPABASE_URL"),
   supabaseServiceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
   adminApiKey: process.env.ADMIN_API_KEY ?? "",

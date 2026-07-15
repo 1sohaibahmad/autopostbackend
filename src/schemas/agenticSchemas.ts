@@ -22,6 +22,18 @@ export const ingestTrendSignalsSchema = z.object({
 export const listTrendSignalsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(30),
   source: z.string().trim().max(80).optional(),
+  platform: platformSchema.optional(),
+  minVelocity: z.coerce.number().int().min(0).max(100).optional(),
+  q: z.string().trim().max(120).optional(),
+});
+
+export const discoverTrendSignalsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(5).max(100).default(30),
+  niche: z.string().trim().max(120).optional(),
+  platform: platformSchema.optional(),
+  language: z.string().trim().max(12).default("en"),
+  region: z.string().trim().max(20).default("global"),
+  brandProfileId: z.coerce.number().int().positive().optional(),
 });
 
 export const recomputeMatchesSchema = z.object({

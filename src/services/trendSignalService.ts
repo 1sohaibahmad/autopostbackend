@@ -1,6 +1,115 @@
 import { HttpError } from "../lib/httpError";
 import { supabase } from "../lib/supabase";
 import { getBrandProfileForUserById } from "./brandProfileService";
+import OpenAI from "openai";
+import { env } from "../config/env";
+
+const openai = new OpenAI({ apiKey: env.openAiApiKey });
+
+type DiscoverySignal = {
+  source: string;
+  externalId: string;
+  title: string;
+  description: string;
+  url?: string;
+  tags: string[];
+  platformHints: string[];
+  language: string;
+  region: string;
+  velocityScore: number;
+  publishedAt?: string;
+  relevanceScore: number;
+  reasons: string[];
+  imagePromptHint?: string;
+};
+
+async function rerankSignalsWithAi(params: {
+  rankedSignals: DiscoverySignal[];
+  niche?: string;
+  platform?: string;
+  brandContextSummary?: string;
+}): Promise<DiscoverySignal[]> {
+  const pool = params.rankedSignals.slice(0, 35);
+  if (pool.length < 6) return params.rankedSignals;
+
+  const compactSignals = pool.map((signal, index) => ({
+    index,
+    source: signal.source,
+    title: signal.title.slice(0, 160),
+    description: signal.description.slice(0, 240),
+    velocityScore: signal.velocityScore,
+    baseRelevance: signal.relevanceScore,
+  }));
+
+  const prompt = `You are a social trend intelligence assistant.
+
+Task: rerank candidate trend signals for content generation quality.
+
+Platform target: ${params.platform ?? "any"}
+Niche: ${params.niche ?? "general"}
+Brand context: ${params.brandContextSummary ?? "not provided"}
+
+Candidate signals (JSON):
+${JSON.stringify(compactSignals)}
+
+Return ONLY valid JSON in this exact format:
+{
+  "ranked": [
+    { "index": 0, "score": 0-100, "reason": "short reason", "imagePromptHint": "visual direction words" }
+  ]
+}
+
+Rules:
+- Keep all input indexes unique in output.
+- Prioritize trend freshness, social conversation potential, and niche fit.
+- imagePromptHint should be a concise visual direction phrase (5-20 words).
+`;
+
+  try {
+    const result = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+    });
+
+    const raw = (result.choices[0]?.message?.content ?? "").trim();
+    const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+    const parsed = JSON.parse(cleaned) as { ranked?: Array<{ index: number; score: number; reason?: string; imagePromptHint?: string }> };
+    const ranked = parsed.ranked ?? [];
+    if (!ranked.length) return params.rankedSignals;
+
+    const scoreByIndex = new Map<number, { score: number; reason?: string; imagePromptHint?: string }>();
+    for (const item of ranked) {
+      if (typeof item.index !== "number") continue;
+      scoreByIndex.set(item.index, {
+        score: Math.max(0, Math.min(100, Number(item.score) || 0)),
+        reason: item.reason,
+        imagePromptHint: item.imagePromptHint,
+      });
+    }
+
+    const adjustedPool = pool.map((signal, index) => {
+      const ai = scoreByIndex.get(index);
+      if (!ai) return signal;
+      const blended = Math.round(signal.relevanceScore * 0.6 + ai.score * 0.4);
+      return {
+        ...signal,
+        relevanceScore: blended,
+        reasons: ai.reason ? [...signal.reasons, `ai_reason:${ai.reason}`] : signal.reasons,
+        imagePromptHint: ai.imagePromptHint || signal.imagePromptHint,
+      };
+    });
+
+    adjustedPool.sort((a, b) => {
+      if (b.relevanceScore !== a.relevanceScore) return b.relevanceScore - a.relevanceScore;
+      return b.velocityScore - a.velocityScore;
+    });
+
+    return [...adjustedPool, ...params.rankedSignals.slice(pool.length)];
+  } catch {
+    return params.rankedSignals;
+  }
+}
 
 function tokenize(text: string): Set<string> {
   return new Set(
@@ -19,6 +128,306 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
   }
   if (a.size === 0) return 0;
   return Math.round((overlap / a.size) * 100);
+}
+
+function decodeHtml(text: string): string {
+  return text
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractTag(text: string, tagName: string): string {
+  const match = text.match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+  return match ? decodeHtml(match[1]) : "";
+}
+
+function parseRssItems(xml: string): Array<{ title: string; link: string; description: string; publishedAt?: string }> {
+  const items = Array.from(xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)).map((m) => m[1]);
+  return items.map((entry) => ({
+    title: extractTag(entry, "title"),
+    link: extractTag(entry, "link"),
+    description: extractTag(entry, "description"),
+    publishedAt: extractTag(entry, "pubDate") || undefined,
+  }));
+}
+
+function safeUrlKey(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]/g, "").slice(-48) || `k${Date.now()}`;
+}
+
+function recencyScore(publishedAt?: string): number {
+  if (!publishedAt) return 45;
+  const ts = new Date(publishedAt).getTime();
+  if (Number.isNaN(ts)) return 45;
+  const ageHours = (Date.now() - ts) / (1000 * 60 * 60);
+  if (ageHours <= 6) return 95;
+  if (ageHours <= 12) return 88;
+  if (ageHours <= 24) return 78;
+  if (ageHours <= 48) return 66;
+  if (ageHours <= 72) return 58;
+  return 45;
+}
+
+function platformHintsFromText(text: string): string[] {
+  const lower = text.toLowerCase();
+  const hints = new Set<string>();
+  if (/instagram|reels|stories/.test(lower)) hints.add("instagram");
+  if (/linkedin|b2b|professional/.test(lower)) hints.add("linkedin");
+  if (/twitter|x\b|thread/.test(lower)) hints.add("x");
+  if (/tiktok|short video/.test(lower)) hints.add("tiktok");
+  if (/facebook|community/.test(lower)) hints.add("facebook");
+  if (/pinterest|pins/.test(lower)) hints.add("pinterest");
+  return Array.from(hints);
+}
+
+function signalFromRss(params: {
+  source: string;
+  item: { title: string; link: string; description: string; publishedAt?: string };
+  region: string;
+  language: string;
+}): DiscoverySignal {
+  const textBlob = `${params.item.title} ${params.item.description}`;
+  return {
+    source: params.source,
+    externalId: `${params.source}-${safeUrlKey(params.item.link || params.item.title)}`,
+    title: params.item.title,
+    description: params.item.description || params.item.title,
+    url: params.item.link,
+    tags: Array.from(tokenize(textBlob)).slice(0, 8),
+    platformHints: platformHintsFromText(textBlob),
+    language: params.language,
+    region: params.region,
+    velocityScore: recencyScore(params.item.publishedAt),
+    publishedAt: params.item.publishedAt,
+    relevanceScore: 0,
+    reasons: [],
+  };
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "autopostbackend/1.0 (trend-engine)",
+      accept: "application/json, application/rss+xml, application/xml, text/xml, text/plain",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Upstream fetch failed (${response.status})`);
+  }
+  return response.text();
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      "user-agent": "autopostbackend/1.0 (trend-engine)",
+      accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Upstream fetch failed (${response.status})`);
+  }
+  return (await response.json()) as T;
+}
+
+async function discoverFromHackerNews(region: string, language: string): Promise<DiscoverySignal[]> {
+  const xml = await fetchText("https://news.ycombinator.com/rss");
+  return parseRssItems(xml)
+    .slice(0, 25)
+    .map((item) => signalFromRss({ source: "hackernews", item, region, language }));
+}
+
+async function discoverFromProductHunt(region: string, language: string): Promise<DiscoverySignal[]> {
+  const xml = await fetchText("https://www.producthunt.com/feed");
+  return parseRssItems(xml)
+    .slice(0, 25)
+    .map((item) => {
+      const signal = signalFromRss({ source: "producthunt", item, region, language });
+      signal.platformHints = ["linkedin", "x", ...signal.platformHints].slice(0, 4);
+      return signal;
+    });
+}
+
+async function discoverFromGoogleNews(niche: string | undefined, region: string, language: string): Promise<DiscoverySignal[]> {
+  const query = encodeURIComponent(`${niche || "marketing"} trends`);
+  const xml = await fetchText(`https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`);
+  return parseRssItems(xml)
+    .slice(0, 25)
+    .map((item) => signalFromRss({ source: "google_news", item, region, language }));
+}
+
+async function discoverFromDevTo(region: string, language: string): Promise<DiscoverySignal[]> {
+  const json = await fetchJson<Array<{ id: number; title: string; description: string; url: string; published_at: string; tag_list: string[] }>>(
+    "https://dev.to/api/articles?top=20"
+  );
+  return (json ?? []).slice(0, 20).map((entry) => ({
+    source: "devto",
+    externalId: `devto-${entry.id}`,
+    title: entry.title,
+    description: entry.description || entry.title,
+    url: entry.url,
+    tags: (entry.tag_list ?? []).slice(0, 10),
+    platformHints: ["linkedin", "x"],
+    language,
+    region,
+    velocityScore: recencyScore(entry.published_at),
+    publishedAt: entry.published_at,
+    relevanceScore: 0,
+    reasons: [],
+  }));
+}
+
+function redditSubredditsForNiche(niche?: string): string[] {
+  const n = (niche ?? "").toLowerCase();
+  if (/(saas|startup|b2b|product)/.test(n)) return ["startups", "Entrepreneur", "SaaS", "marketing"];
+  if (/(ai|ml|artificial intelligence|automation)/.test(n)) return ["artificial", "MachineLearning", "singularity", "OpenAI"];
+  if (/(ecommerce|shop|d2c|retail)/.test(n)) return ["ecommerce", "shopify", "marketing", "smallbusiness"];
+  if (/(crypto|web3|blockchain)/.test(n)) return ["CryptoCurrency", "ethtrader", "defi", "bitcoin"];
+  return ["marketing", "socialmedia", "technology", "entrepreneur"];
+}
+
+async function discoverFromReddit(niche: string | undefined, region: string, language: string): Promise<DiscoverySignal[]> {
+  const subreddits = redditSubredditsForNiche(niche);
+  const settled = await Promise.allSettled(
+    subreddits.map((subreddit) =>
+      fetchJson<{
+        data?: { children?: Array<{ data?: { id: string; title: string; selftext?: string; permalink?: string; created_utc?: number; score?: number; num_comments?: number } }> };
+      }>(`https://www.reddit.com/r/${subreddit}/hot.json?limit=12`)
+    )
+  );
+
+  const signals: DiscoverySignal[] = [];
+
+  for (let i = 0; i < settled.length; i += 1) {
+    const result = settled[i];
+    if (result.status !== "fulfilled") continue;
+    const subreddit = subreddits[i];
+    const children = result.value?.data?.children ?? [];
+
+    for (const child of children) {
+      const post = child.data;
+      if (!post?.title) continue;
+      const score = Number(post.score) || 0;
+      const comments = Number(post.num_comments) || 0;
+      const velocity = Math.max(35, Math.min(100, Math.round(Math.log10(score + 1) * 28 + Math.log10(comments + 1) * 20 + 30)));
+      const publishedAt = post.created_utc ? new Date(post.created_utc * 1000).toISOString() : undefined;
+      const textBlob = `${post.title} ${post.selftext ?? ""} ${subreddit}`;
+
+      signals.push({
+        source: "reddit",
+        externalId: `reddit-${post.id}`,
+        title: post.title,
+        description: (post.selftext || post.title).slice(0, 5000),
+        url: post.permalink ? `https://www.reddit.com${post.permalink}` : undefined,
+        tags: Array.from(tokenize(textBlob)).slice(0, 10),
+        platformHints: platformHintsFromText(textBlob),
+        language,
+        region,
+        velocityScore: velocity,
+        publishedAt,
+        relevanceScore: 0,
+        reasons: [`reddit_score:${score}`, `reddit_comments:${comments}`, `subreddit:${subreddit}`],
+      });
+    }
+  }
+
+  return signals;
+}
+
+function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, nicheTokens: Set<string>, platform?: string): DiscoverySignal {
+  const signalTokens = tokenize(`${signal.title} ${signal.description} ${signal.tags.join(" ")}`);
+  const nicheScore = nicheTokens.size ? overlapScore(nicheTokens, signalTokens) : 40;
+  const brandScore = contextTokens.size ? overlapScore(contextTokens, signalTokens) : 50;
+  const platformBoost = platform && signal.platformHints.includes(platform) ? 12 : 0;
+  const relevance = Math.round(Math.min(100, nicheScore * 0.3 + brandScore * 0.45 + signal.velocityScore * 0.25 + platformBoost));
+  return {
+    ...signal,
+    relevanceScore: relevance,
+    reasons: [
+      `niche_match:${nicheScore}`,
+      `brand_match:${brandScore}`,
+      `velocity:${signal.velocityScore}`,
+      `platform_boost:${platformBoost}`,
+    ],
+  };
+}
+
+export async function discoverTrendSignals(params: {
+  userId: string;
+  limit: number;
+  niche?: string;
+  platform?: string;
+  language: string;
+  region: string;
+  brandProfileId?: number;
+}) {
+  let contextTokens = new Set<string>();
+  let brandContextSummary = "";
+  if (params.brandProfileId) {
+    const brand = await getBrandProfileForUserById(params.userId, params.brandProfileId);
+    brandContextSummary = [
+      brand.brand_name,
+      brand.industry,
+      brand.target_audience ?? "",
+      brand.brand_voice ?? "",
+      ...(brand.products ?? []).map((p) => `${p.name} ${p.description ?? ""}`),
+    ]
+      .join(" ")
+      .slice(0, 900);
+    contextTokens = tokenize(
+      brandContextSummary
+    );
+  }
+
+  const nicheTokens = tokenize(params.niche ?? "");
+
+  const settled = await Promise.allSettled([
+    discoverFromProductHunt(params.region, params.language),
+    discoverFromHackerNews(params.region, params.language),
+    discoverFromGoogleNews(params.niche, params.region, params.language),
+    discoverFromDevTo(params.region, params.language),
+    discoverFromReddit(params.niche, params.region, params.language),
+  ]);
+
+  const merged = settled
+    .filter((s): s is PromiseFulfilledResult<DiscoverySignal[]> => s.status === "fulfilled")
+    .flatMap((s) => s.value)
+    .map((signal) => computeRelevance(signal, contextTokens, nicheTokens, params.platform));
+
+  const deduped = new Map<string, DiscoverySignal>();
+  for (const signal of merged) {
+    const key = signal.url || `${signal.source}:${signal.externalId}`;
+    const existing = deduped.get(key);
+    if (!existing || signal.relevanceScore > existing.relevanceScore) {
+      deduped.set(key, signal);
+    }
+  }
+
+  const rankedByRules = Array.from(deduped.values()).sort((a, b) => {
+    if (b.relevanceScore !== a.relevanceScore) return b.relevanceScore - a.relevanceScore;
+    return b.velocityScore - a.velocityScore;
+  });
+
+  const ranked = await rerankSignalsWithAi({
+    rankedSignals: rankedByRules,
+    niche: params.niche,
+    platform: params.platform,
+    brandContextSummary,
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    sourcesUsed: ["producthunt", "hackernews", "google_news", "devto", "reddit"],
+    fallbackCount: settled.filter((s) => s.status === "rejected").length,
+    data: ranked.slice(0, params.limit),
+  };
 }
 
 export async function ingestTrendSignals(
@@ -88,7 +497,7 @@ export async function ingestTrendSignals(
   return { inserted, updated, total: payload.signals.length };
 }
 
-export async function listTrendSignals(userId: string, options: { source?: string; limit: number }) {
+export async function listTrendSignals(userId: string, options: { source?: string; platform?: string; minVelocity?: number; q?: string; limit: number }) {
   let query = supabase
     .from("trend_signals")
     .select("*")
@@ -99,6 +508,18 @@ export async function listTrendSignals(userId: string, options: { source?: strin
 
   if (options.source) {
     query = query.eq("source", options.source);
+  }
+
+  if (options.platform) {
+    query = query.contains("platform_hints", [options.platform]);
+  }
+
+  if (typeof options.minVelocity === "number") {
+    query = query.gte("velocity_score", options.minVelocity);
+  }
+
+  if (options.q?.trim()) {
+    query = query.or(`title.ilike.%${options.q.trim()}%,description.ilike.%${options.q.trim()}%`);
   }
 
   const { data, error } = await query;

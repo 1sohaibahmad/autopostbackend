@@ -10,7 +10,7 @@ import { fetchTrendExamples } from "./trendSignalService";
 import { trackUsageEvent } from "./usageMeteringService";
 import { runFinalSafetyJudge } from "./finalSafetyJudgeService";
 
-const DAILY_POST_LIMIT = 5;
+const DAILY_POST_LIMIT = 8;
 
 function getUtcDayWindow(now = new Date()): { start: string; end: string } {
   const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));

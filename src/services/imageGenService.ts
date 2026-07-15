@@ -1,9 +1,14 @@
 import Replicate from "replicate";
+import { fal } from "@fal-ai/client";
 import sharp from "sharp";
 import { retryWithBackoff } from "./textGenService";
 import { env } from "../config/env";
 
 const replicate = env.replicateApiToken ? new Replicate({ auth: env.replicateApiToken }) : null;
+
+if (env.falApiKey) {
+  fal.config({ credentials: env.falApiKey });
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -35,7 +40,56 @@ async function validateGeneratedImageUrl(url: string, options?: ImageGenerationO
   }
 }
 
-// ── Replicate (active) ──────────────────────────────────
+// ── fal.ai (primary) ─────────────────────────────────────
+function falSizeForDimensions(width?: number, height?: number): string {
+  if (!width || !height) return "portrait_4_3";
+  if (width > height) return height <= 720 ? "landscape_16_9" : "landscape_4_3";
+  if (height > width) return width <= 720 ? "portrait_16_9" : "portrait_4_3";
+  return width >= 1024 ? "square_hd" : "square";
+}
+
+async function generateImageFal(imageDirection: string, options?: ImageGenerationOptions): Promise<string> {
+  if (!env.falApiKey) {
+    throw new Error("FAL_KEY is not configured");
+  }
+
+  const result = await retryWithBackoff(
+    () =>
+      withTimeout(
+        fal.subscribe("fal-ai/flux/dev", {
+          input: {
+            prompt: imageDirection,
+            image_size: falSizeForDimensions(options?.width, options?.height) as any,
+            num_inference_steps: 28,
+            guidance_scale: 3.5,
+            enable_safety_checker: true,
+          },
+        }).then((res: any) => res.data),
+        25000,
+        "fal.ai image generation"
+      ),
+    1,
+    1200,
+    (err: any) => {
+      if (err instanceof Error) {
+        const msg = err.message || "";
+        if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
+        if (msg.includes("503") || msg.includes("overloaded")) return true;
+      }
+      return false;
+    }
+  );
+
+  const url = result?.images?.[0]?.url;
+  if (!url || typeof url !== "string") {
+    throw new Error("fal.ai returned no image URL: " + JSON.stringify(result));
+  }
+
+  await validateGeneratedImageUrl(url, options);
+  return url;
+}
+
+// ── Replicate (fallback) ──────────────────────────────────
 export interface ImageGenerationOptions {
   width?: number;
   height?: number;
@@ -112,21 +166,38 @@ function generateImagePollinations(imageDirection: string, options?: ImageGenera
 
 export interface GeneratedImage {
   url: string;
-  provider: "replicate" | "pollinations";
+  provider: "fal" | "replicate" | "pollinations";
   model: string;
 }
 
 export async function generateImage(imageDirection: string, options?: ImageGenerationOptions): Promise<GeneratedImage> {
+  // 1. Try fal.ai first
   try {
-    const url = await generateImageReplicate(imageDirection, options);
+    const url = await generateImageFal(imageDirection, options);
     return {
       url,
-      provider: "replicate",
-      model: "stability-ai/sdxl",
+      provider: "fal",
+      model: "fal-ai/flux/dev",
     };
-  } catch (primaryError) {
+  } catch (falError) {
+    // 2. Fall back to Replicate if available
+    if (replicate) {
+      try {
+        const url = await generateImageReplicate(imageDirection, options);
+        return {
+          url,
+          provider: "replicate",
+          model: "stability-ai/sdxl",
+        };
+      } catch (replicateError) {
+        // continue to Pollinations below
+      }
+    }
+
+    // 3. Last resort: Pollinations (only if allowed)
     if (!env.allowLowQualityImageFallback) {
-      throw new Error(`Primary image provider unavailable: ${primaryError instanceof Error ? primaryError.message : "unknown error"}`);
+      const primaryErr = falError instanceof Error ? falError.message : "unknown error";
+      throw new Error(`Primary image providers unavailable: ${primaryErr}`);
     }
     const fallbackUrl = generateImagePollinations(imageDirection, options);
     await validateGeneratedImageUrl(fallbackUrl, options);
@@ -137,29 +208,6 @@ export async function generateImage(imageDirection: string, options?: ImageGener
     };
   }
 }
-
-// ── fal.ai fallback ─────────────────────────────────────
-// import { fal } from "@fal-ai/client";
-// fal.config({ credentials: process.env.FAL_KEY });
-//
-// async function generateImageFal(imageDirection: string): Promise<string> {
-//   const result = await retryWithBackoff(
-//     () =>
-//       fal.subscribe("fal-ai/flux/dev", {
-//         input: { prompt: imageDirection, image_size: "square_hd", num_inference_steps: 28 },
-//       }),
-//     3, 2000,
-//     (err) => err instanceof Error && (err.message.includes("429") || err.message.includes("503"))
-//   );
-//   const url = (result as any).data?.images?.[0]?.url;
-//   if (!url) throw new Error("fal.ai returned no image URL");
-//   return url;
-// }
-
-// ── Pollinations fallback (free, lower quality) ─────────
-// function generateImagePollinations(imageDirection: string): string {
-//   return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=1024&height=1024&nologo=true&enhance=true`;
-// }
 
 export async function addTextOverlay(
   imageUrl: string,

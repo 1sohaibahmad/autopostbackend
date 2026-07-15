@@ -94,9 +94,9 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 1_000_000_000);
 }
 
-function estimateGenerationCostUsd(params: { provider: "replicate" | "pollinations"; promptLength: number; judgeCalls: number }): number {
+function estimateGenerationCostUsd(params: { provider: "fal" | "replicate" | "pollinations"; promptLength: number; judgeCalls: number }): number {
   const textCost = 0.0000018 * Math.max(params.promptLength, 1);
-  const imageCost = params.provider === "replicate" ? 0.025 : 0;
+  const imageCost = params.provider === "fal" ? 0.025 : params.provider === "replicate" ? 0.025 : 0;
   const judgeCost = params.judgeCalls * 0.0012;
   return Number((textCost + imageCost + judgeCost).toFixed(6));
 }
@@ -249,7 +249,7 @@ interface PersistGenerationRowInput {
       issues: Array<{ category: string; severity: string; message: string }>;
     };
     baseImage: {
-      provider: "replicate" | "pollinations";
+      provider: "fal" | "replicate" | "pollinations";
       model: string;
     };
     finalJudge: {

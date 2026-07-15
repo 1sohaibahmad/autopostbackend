@@ -44,7 +44,7 @@ export const generatePostResponseSchema = z.object({
   imageUrl: z.string().url(),
   generationMode: z.enum(["auto", "native_ai", "with_text", "structured_layout"]),
   imageGeneration: z.object({
-    provider: z.enum(["replicate", "pollinations"]),
+    provider: z.enum(["fal", "replicate", "pollinations"]),
     model: z.string(),
     seed: z.number().int().nonnegative(),
     estimatedCostUsd: z.number().nonnegative(),

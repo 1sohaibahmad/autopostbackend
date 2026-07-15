@@ -21,6 +21,10 @@ type DiscoverySignal = {
   relevanceScore: number;
   reasons: string[];
   imagePromptHint?: string;
+  formatType?: "color_theme" | "meme_template" | "caption_pattern" | "challenge" | "news_hook";
+  momentumStage?: "rising" | "peaking" | "fading";
+  brandSafetyRating?: "safe" | "caution" | "avoid";
+  explanation?: string;
 };
 
 async function rerankSignalsWithAi(params: {
@@ -175,6 +179,13 @@ function recencyScore(publishedAt?: string): number {
   return 45;
 }
 
+function normalizeDateTime(value?: string): string | undefined {
+  if (!value) return undefined;
+  const ts = new Date(value).getTime();
+  if (Number.isNaN(ts)) return undefined;
+  return new Date(ts).toISOString();
+}
+
 function platformHintsFromText(text: string): string[] {
   const lower = text.toLowerCase();
   const hints = new Set<string>();
@@ -194,6 +205,7 @@ function signalFromRss(params: {
   language: string;
 }): DiscoverySignal {
   const textBlob = `${params.item.title} ${params.item.description}`;
+  const normalizedPublishedAt = normalizeDateTime(params.item.publishedAt);
   return {
     source: params.source,
     externalId: `${params.source}-${safeUrlKey(params.item.link || params.item.title)}`,
@@ -204,8 +216,8 @@ function signalFromRss(params: {
     platformHints: platformHintsFromText(textBlob),
     language: params.language,
     region: params.region,
-    velocityScore: recencyScore(params.item.publishedAt),
-    publishedAt: params.item.publishedAt,
+    velocityScore: recencyScore(normalizedPublishedAt),
+    publishedAt: normalizedPublishedAt,
     relevanceScore: 0,
     reasons: [],
   };
@@ -277,8 +289,8 @@ async function discoverFromDevTo(region: string, language: string): Promise<Disc
     platformHints: ["linkedin", "x"],
     language,
     region,
-    velocityScore: recencyScore(entry.published_at),
-    publishedAt: entry.published_at,
+    velocityScore: recencyScore(normalizeDateTime(entry.published_at)),
+    publishedAt: normalizeDateTime(entry.published_at),
     relevanceScore: 0,
     reasons: [],
   }));
@@ -359,6 +371,35 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
   };
 }
 
+function classifyTrendSignal(signal: DiscoverySignal, niche?: string, platform?: string): DiscoverySignal {
+  const text = `${signal.title} ${signal.description} ${signal.tags.join(" ")}`.toLowerCase();
+  const hoursOld = signal.publishedAt ? (Date.now() - new Date(signal.publishedAt).getTime()) / (1000 * 60 * 60) : 72;
+
+  let momentumStage: DiscoverySignal["momentumStage"] = "fading";
+  if (signal.velocityScore >= 82 || hoursOld <= 12) momentumStage = "peaking";
+  else if (signal.velocityScore >= 62 || hoursOld <= 36) momentumStage = "rising";
+
+  let brandSafetyRating: DiscoverySignal["brandSafetyRating"] = "safe";
+  if (/(war|shooting|disaster|tragedy|violent|adult|nsfw)/.test(text)) brandSafetyRating = "avoid";
+  else if (/(politic|election|religion|crime|lawsuit|controvers)/.test(text)) brandSafetyRating = "caution";
+
+  let formatType: DiscoverySignal["formatType"] = "news_hook";
+  if (/(meme|template|parody)/.test(text)) formatType = "meme_template";
+  else if (/(challenge|duet|stitch|remix)/.test(text)) formatType = "challenge";
+  else if (/(palette|color|theme|aesthetic|look)/.test(text)) formatType = "color_theme";
+  else if (/(caption|hook|headline|thread)/.test(text)) formatType = "caption_pattern";
+
+  const explanation = `Why it fits: ${signal.source} trend with ${momentumStage} momentum, ${signal.relevanceScore}/100 relevance${platform ? ` for ${platform}` : ""}${niche ? ` in ${niche}` : ""}.`;
+
+  return {
+    ...signal,
+    momentumStage,
+    brandSafetyRating,
+    formatType,
+    explanation,
+  };
+}
+
 export async function discoverTrendSignals(params: {
   userId: string;
   limit: number;
@@ -422,11 +463,13 @@ export async function discoverTrendSignals(params: {
     brandContextSummary,
   });
 
+  const classified = ranked.map((signal) => classifyTrendSignal(signal, params.niche, params.platform));
+
   return {
     generatedAt: new Date().toISOString(),
     sourcesUsed: ["producthunt", "hackernews", "google_news", "devto", "reddit"],
     fallbackCount: settled.filter((s) => s.status === "rejected").length,
-    data: ranked.slice(0, params.limit),
+    data: classified.slice(0, params.limit),
   };
 }
 
@@ -511,7 +554,7 @@ export async function listTrendSignals(userId: string, options: { source?: strin
   }
 
   if (options.platform) {
-    query = query.contains("platform_hints", [options.platform]);
+    query = query.filter("platform_hints", "cs", JSON.stringify([options.platform]));
   }
 
   if (typeof options.minVelocity === "number") {

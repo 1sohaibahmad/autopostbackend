@@ -160,6 +160,7 @@ export async function generateCaption(
     objective?: "awareness" | "engagement" | "leads" | "sales";
     audienceSegment?: string;
     proofPoints?: string[];
+    refinementInstruction?: string;
   }
 ): Promise<GeneratedContent> {
   const productHints =
@@ -188,6 +189,7 @@ Objective: ${trendContext?.objective ?? "engagement"}
 Primary Objective: ${generationContext?.objective ?? trendContext?.objective ?? "engagement"}
 Audience Segment: ${generationContext?.audienceSegment ?? "Default brand audience"}
 Proof Points: ${proofPoints}
+Refinement Instruction: ${generationContext?.refinementInstruction ?? "None"}
 
 Create high-quality, specific and non-generic content.
 Rules:
@@ -196,6 +198,12 @@ Rules:
 - Keep it platform-native and brand-safe.
 - Respect banned words and topics to avoid.
 - Incorporate the proof points naturally when relevant.
+- If post type is review_testimonial, use ONLY user-provided claims/proof points and never fabricate customer quotes or ratings.
+- If post type is comparison, avoid defamatory or unverifiable competitor claims.
+- If post type is holiday_occasion, tie the message to a specific occasion naturally.
+- For trend-based content, riff on trend ideas without copying copyrighted assets, logos, celebrity faces, album art, or lyrics.
+- imageDirection must clearly reflect trend cues when available (color palette, composition style, mood), while staying original and IP-safe.
+- If refinement instruction is present, prioritize it over prior style assumptions while remaining brand-safe.
 
 Respond with ONLY JSON in this exact format:
 {

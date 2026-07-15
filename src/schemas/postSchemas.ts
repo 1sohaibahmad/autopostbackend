@@ -13,4 +13,5 @@ export const generatePostSchema = z.object({
   customHeadline: z.string().trim().max(120).optional(),
   trendBriefId: z.coerce.number().int().positive().optional(),
   trendSignalIds: z.array(z.coerce.number().int().positive()).max(5).default([]),
+  refinementInstruction: z.string().trim().max(320).optional(),
 });

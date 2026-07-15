@@ -21,6 +21,7 @@ router.post("/generate", requireAuth, validateRequest({ body: generatePostSchema
       customHeadline: req.body.customHeadline,
       trendBriefId: req.body.trendBriefId,
       trendSignalIds: req.body.trendSignalIds,
+      refinementInstruction: req.body.refinementInstruction,
     });
     res.json(generated);
   } catch (error) {

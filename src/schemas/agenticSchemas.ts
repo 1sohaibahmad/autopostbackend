@@ -64,3 +64,8 @@ export const runAutopilotSchema = z.object({
   maxDrafts: z.coerce.number().int().min(1).max(10).default(2),
   postType: postTypeSchema.default("trend_based"),
 });
+
+export const extractImageContextSchema = z.object({
+  imageUrl: z.string().url(),
+  focus: z.string().trim().max(240).optional(),
+});

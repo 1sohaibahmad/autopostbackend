@@ -12,8 +12,10 @@ export const platformSchema = z.enum([
 export const postTypeSchema = z.enum([
   "product_promotion",
   "trend_based",
+  "infographic",
   "how_to",
-  "announcement",
-  "review",
+  "review_testimonial",
+  "comparison",
   "engagement",
+  "holiday_occasion",
 ]);

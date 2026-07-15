@@ -50,7 +50,15 @@ export async function runAutopilot(params: {
   brandProfileId: number;
   platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest";
   maxDrafts: number;
-  postType: "product_promotion" | "trend_based" | "how_to" | "announcement" | "review" | "engagement";
+  postType:
+    | "product_promotion"
+    | "trend_based"
+    | "infographic"
+    | "how_to"
+    | "review_testimonial"
+    | "comparison"
+    | "engagement"
+    | "holiday_occasion";
 }) {
   const { data: settings } = await supabase
     .from("autopilot_settings")

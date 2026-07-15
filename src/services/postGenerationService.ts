@@ -50,20 +50,54 @@ function featureTags(postType: string, industry: string, platform: string): stri
   const features: string[] = [];
   if (industry) features.push(industry);
   if (postType === "product_promotion") features.push("Featured Product");
+  if (postType === "infographic") features.push("Data Snapshot");
   if (postType === "how_to") features.push("Step by Step");
-  if (postType === "announcement") features.push("New Update");
+  if (postType === "holiday_occasion") features.push("Seasonal Moment");
   if (postType === "engagement") features.push("Join Us");
-  if (postType === "review") features.push("Testimonial");
+  if (postType === "review_testimonial") features.push("Testimonial");
+  if (postType === "comparison") features.push("Compare Options");
   if (postType === "trend_based") features.push("Trending Now");
   features.push(platform.charAt(0).toUpperCase() + platform.slice(1));
   return features.slice(0, 3);
+}
+
+function platformDeliveryHints(platform: string): {
+  aspectRatio: string;
+  captionSoftLimit: number;
+  hashtagRange: string;
+  suggestedBestTime: string;
+} {
+  if (platform === "instagram") {
+    return { aspectRatio: "4:5", captionSoftLimit: 2200, hashtagRange: "8-12", suggestedBestTime: "11:00 AM local" };
+  }
+  if (platform === "linkedin") {
+    return { aspectRatio: "1:1", captionSoftLimit: 900, hashtagRange: "3-5", suggestedBestTime: "8:30 AM local" };
+  }
+  if (platform === "x") {
+    return { aspectRatio: "16:9", captionSoftLimit: 260, hashtagRange: "2-4", suggestedBestTime: "12:00 PM local" };
+  }
+  if (platform === "tiktok") {
+    return { aspectRatio: "9:16", captionSoftLimit: 400, hashtagRange: "4-8", suggestedBestTime: "7:30 PM local" };
+  }
+  if (platform === "pinterest") {
+    return { aspectRatio: "2:3", captionSoftLimit: 500, hashtagRange: "4-8", suggestedBestTime: "8:00 PM local" };
+  }
+  return { aspectRatio: "1.91:1", captionSoftLimit: 1200, hashtagRange: "5-10", suggestedBestTime: "1:00 PM local" };
 }
 
 export async function generatePostForUser(params: {
   userId: string;
   brandProfileId: number;
   platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest";
-  postType: "product_promotion" | "trend_based" | "how_to" | "announcement" | "review" | "engagement";
+  postType:
+    | "product_promotion"
+    | "trend_based"
+    | "infographic"
+    | "how_to"
+    | "review_testimonial"
+    | "comparison"
+    | "engagement"
+    | "holiday_occasion";
   topic: string;
   tone: string;
   objective?: "awareness" | "engagement" | "leads" | "sales";
@@ -72,8 +106,11 @@ export async function generatePostForUser(params: {
   customHeadline?: string;
   trendBriefId?: number;
   trendSignalIds?: number[];
+  refinementInstruction?: string;
 }) {
-  await enforceDailyPostLimit(params.userId);
+  if (!params.refinementInstruction?.trim()) {
+    await enforceDailyPostLimit(params.userId);
+  }
 
   const brandProfile = await getBrandProfileForUserById(params.userId, params.brandProfileId);
 
@@ -133,6 +170,7 @@ export async function generatePostForUser(params: {
       objective: params.objective,
       audienceSegment: params.audienceSegment,
       proofPoints: params.proofPoints,
+      refinementInstruction: params.refinementInstruction,
     }
   );
 
@@ -232,6 +270,7 @@ export async function generatePostForUser(params: {
       strategy: generated.strategy,
       alternatives: generated.alternatives,
     },
+    delivery: platformDeliveryHints(params.platform),
     safety,
   };
 }

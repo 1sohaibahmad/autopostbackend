@@ -20,4 +20,9 @@ export const env = {
   supabaseUrl: required("SUPABASE_URL"),
   supabaseServiceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
   adminApiKey: process.env.ADMIN_API_KEY ?? "",
+  trendsWorkerEnabled: (process.env.TRENDS_WORKER_ENABLED ?? "true").toLowerCase() === "true",
+  trendsWorkerIntervalMinutes: Math.max(1, Number(process.env.TRENDS_WORKER_INTERVAL_MINUTES ?? 30)),
+  get trendsWorkerIntervalMs() {
+    return this.trendsWorkerIntervalMinutes * 60 * 1000;
+  },
 };

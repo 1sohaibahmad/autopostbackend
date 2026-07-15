@@ -103,6 +103,26 @@ export const openApiDocument = {
         },
       },
     },
+    "/trends/worker/status": {
+      get: {
+        tags: ["Trends"],
+        summary: "Get trend ingestion worker status and recent runs",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": { description: "Worker status" },
+        },
+      },
+    },
+    "/trends/worker/run-now": {
+      post: {
+        tags: ["Trends"],
+        summary: "Trigger trend ingestion worker immediately",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "202": { description: "Worker run accepted" },
+        },
+      },
+    },
     "/autopilot/settings": {
       put: {
         tags: ["Autopilot"],

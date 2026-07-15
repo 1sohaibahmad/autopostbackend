@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth";
 import { validateRequest } from "../middleware/validate";
-import { generatePostSchema } from "../schemas/postSchemas";
+import { generatePostResponseSchema, generatePostSchema } from "../schemas/postSchemas";
 import { generatePostForUser } from "../services/postGenerationService";
 
 const router = Router();
@@ -22,8 +22,9 @@ router.post("/generate", requireAuth, validateRequest({ body: generatePostSchema
       trendBriefId: req.body.trendBriefId,
       trendSignalIds: req.body.trendSignalIds,
       refinementInstruction: req.body.refinementInstruction,
+      generationMode: req.body.generationMode,
     });
-    res.json(generated);
+    res.json(generatePostResponseSchema.parse(generated));
   } catch (error) {
     next(error);
   }

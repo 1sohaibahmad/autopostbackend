@@ -12,6 +12,8 @@ import { createTrendBriefSchema } from "../schemas/trendSchemas";
 import { createTrendAdaptationBrief } from "../services/trendAdaptationService";
 import { discoverTrendSignals, fetchTrendExamples, ingestTrendSignals, listTrendSignals } from "../services/trendSignalService";
 import { extractImageContentContext } from "../services/imageInsightService";
+import { getTrendIngestionWorkerStatus, runTrendIngestionCycle } from "../workers/trendIngestionWorker";
+import { supabase } from "../lib/supabase";
 
 const router = Router();
 
@@ -92,6 +94,33 @@ router.get("/examples", requireAuth, validateRequest({ query: trendExamplesQuery
       limit: Number(req.query.limit),
     });
     res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/worker/status", requireAuth, async (req, res, next) => {
+  try {
+    const worker = getTrendIngestionWorkerStatus();
+    const { data: recentRuns, error } = await supabase
+      .from("trend_ingestion_runs")
+      .select("id,platform,status,discovered_count,ingested_count,evaluated_count,error,started_at,completed_at")
+      .eq("user_id", req.auth!.user.id)
+      .order("started_at", { ascending: false })
+      .limit(10);
+    if (error) {
+      return next(error);
+    }
+    res.json({ data: { worker, recentRuns: recentRuns ?? [] } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/worker/run-now", requireAuth, async (_req, res, next) => {
+  try {
+    const result = await runTrendIngestionCycle("manual");
+    res.status(202).json({ data: result });
   } catch (error) {
     next(error);
   }

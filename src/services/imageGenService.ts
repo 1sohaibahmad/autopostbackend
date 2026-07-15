@@ -65,11 +65,26 @@ function generateImagePollinations(imageDirection: string): string {
   return `https://image.pollinations.ai/prompt/${encodeURIComponent(imageDirection)}?width=1344&height=768&nologo=true&enhance=true`;
 }
 
-export async function generateImage(imageDirection: string): Promise<string> {
+export interface GeneratedImage {
+  url: string;
+  provider: "replicate" | "pollinations";
+  model: string;
+}
+
+export async function generateImage(imageDirection: string): Promise<GeneratedImage> {
   try {
-    return await generateImageReplicate(imageDirection);
+    const url = await generateImageReplicate(imageDirection);
+    return {
+      url,
+      provider: "replicate",
+      model: "stability-ai/sdxl",
+    };
   } catch {
-    return generateImagePollinations(imageDirection);
+    return {
+      url: generateImagePollinations(imageDirection),
+      provider: "pollinations",
+      model: "pollinations/image",
+    };
   }
 }
 

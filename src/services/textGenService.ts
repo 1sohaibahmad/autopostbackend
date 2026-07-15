@@ -41,6 +41,7 @@ export interface GeneratedContent {
   headlineText: string;
   hashtags: string[];
   imageDirection: string;
+  promptUsed: string;
   cta?: string;
   qualityScore: number;
   qualityReasons: string[];
@@ -274,6 +275,7 @@ Return 4 candidates with different hook styles.`;
       headlineText: best.headlineText,
       hashtags: best.hashtags,
       imageDirection: best.imageDirection,
+      promptUsed: prompt,
       cta: best.cta,
       qualityScore: best.quality.score,
       qualityReasons: best.quality.reasons,

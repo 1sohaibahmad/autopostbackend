@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import { getBrandProfileForUserById } from "./brandProfileService";
 import OpenAI from "openai";
 import { env } from "../config/env";
+import { canonicalizeSignalsForUser } from "./trendCanonicalService";
 
 const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
@@ -733,6 +734,27 @@ export async function discoverTrendSignals(params: {
     value: result,
   });
 
+  try {
+    await canonicalizeSignalsForUser(
+      params.userId,
+      result.data.map((signal) => ({
+        source: signal.source,
+        externalId: signal.externalId,
+        title: signal.title,
+        description: signal.description,
+        url: signal.url,
+        tags: signal.tags,
+        platformHints: signal.platformHints,
+        language: signal.language,
+        region: signal.region,
+        velocityScore: signal.velocityScore,
+        publishedAt: signal.publishedAt,
+      }))
+    );
+  } catch {
+    // canonicalization is best effort in this phase
+  }
+
   return result;
 }
 
@@ -840,6 +862,27 @@ export async function ingestTrendSignals(
       }
       inserted += 1;
     }
+  }
+
+  try {
+    await canonicalizeSignalsForUser(
+      userId,
+      payload.signals.map((signal) => ({
+        source: payload.source,
+        externalId: signal.externalId,
+        title: signal.title,
+        description: signal.description,
+        url: signal.url,
+        tags: signal.tags,
+        platformHints: signal.platformHints,
+        language: signal.language,
+        region: signal.region,
+        velocityScore: signal.velocityScore,
+        publishedAt: signal.publishedAt,
+      }))
+    );
+  } catch {
+    // canonicalization is best effort in this phase
   }
 
   return { inserted, updated, total: payload.signals.length };

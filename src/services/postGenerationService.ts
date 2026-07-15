@@ -1,6 +1,6 @@
 import { HttpError } from "../lib/httpError";
 import { supabase } from "../lib/supabase";
-import { generateImage } from "./imageGenService";
+import { addTextOverlay, generateImage } from "./imageGenService";
 import { formatForPlatform } from "./platformFormatterService";
 import { getBrandProfileForUserById } from "./brandProfileService";
 import { reviewSafety } from "./safetyReviewService";
@@ -8,6 +8,7 @@ import { renderPostImage } from "./templateRenderService";
 import { generateCaption } from "./textGenService";
 import { fetchTrendExamples } from "./trendSignalService";
 import { trackUsageEvent } from "./usageMeteringService";
+import { runFinalSafetyJudge } from "./finalSafetyJudgeService";
 
 const DAILY_POST_LIMIT = 3;
 
@@ -86,6 +87,139 @@ function platformDeliveryHints(platform: string): {
   return { aspectRatio: "1.91:1", captionSoftLimit: 1200, hashtagRange: "5-10", suggestedBestTime: "1:00 PM local" };
 }
 
+function randomSeed(): number {
+  return Math.floor(Math.random() * 1_000_000_000);
+}
+
+function estimateGenerationCostUsd(params: { provider: "replicate" | "pollinations"; promptLength: number; judgeCalls: number }): number {
+  const textCost = 0.0000018 * Math.max(params.promptLength, 1);
+  const imageCost = params.provider === "replicate" ? 0.025 : 0;
+  const judgeCost = params.judgeCalls * 0.0012;
+  return Number((textCost + imageCost + judgeCost).toFixed(6));
+}
+
+function combineRefinementInstruction(userInstruction: string | undefined, forcedInstruction: string | undefined): string | undefined {
+  const user = userInstruction?.trim();
+  const forced = forcedInstruction?.trim();
+  if (user && forced) return `${user}\n\n${forced}`;
+  return user || forced || undefined;
+}
+
+interface PersistGenerationRowInput {
+  userId: string;
+  brandProfileId: number;
+  trendBriefId?: number;
+  platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest";
+  postType:
+    | "product_promotion"
+    | "trend_based"
+    | "infographic"
+    | "how_to"
+    | "review_testimonial"
+    | "comparison"
+    | "engagement"
+    | "holiday_occasion";
+  topic: string;
+  tone: string;
+  generationMode: "auto" | "native_ai" | "with_text" | "structured_layout";
+  ctaText: string;
+  parentGenerationId?: number;
+  totalLatencyMs: number;
+  estimatedCostUsd: number;
+  attempt: {
+    retryAttempt: number;
+    generationSeed: number;
+    generated: {
+      caption: string;
+      hashtags: string[];
+      cta?: string;
+      imageDirection: string;
+      qualityScore: number;
+      qualityReasons: string[];
+      strategy: {
+        hookType: string;
+        coreAngle: string;
+        proofPoint: string;
+        ctaApproach: string;
+      };
+      alternatives: Array<{ caption: string; headlineText: string; hashtags: string[]; cta?: string }>;
+      promptUsed: string;
+    };
+    usedHeadline: string;
+    formatted: {
+      caption: string;
+      hashtags: string[];
+    };
+    finalImageUrl: string;
+    safety: {
+      passed: boolean;
+      score: number;
+      issues: Array<{ category: string; severity: string; message: string }>;
+    };
+    baseImage: {
+      provider: "replicate" | "pollinations";
+      model: string;
+    };
+    finalJudge: {
+      passed: boolean;
+      score: number;
+      issues: Array<{ category: string; severity: string; message: string }>;
+      rationale: string;
+      rawModel?: string;
+    };
+  };
+}
+
+async function persistGenerationRow(input: PersistGenerationRowInput): Promise<number> {
+  const { data: generation, error } = await supabase
+    .from("generations")
+    .insert({
+      user_id: input.userId,
+      brand_profile_id: input.brandProfileId,
+      trend_brief_id: input.trendBriefId ?? null,
+      platform: input.platform,
+      post_type: input.postType,
+      topic: input.topic,
+      tone: input.tone,
+      caption: input.attempt.formatted.caption,
+      hashtags: input.attempt.formatted.hashtags,
+      cta: input.attempt.generated.cta ?? input.ctaText,
+      image_url: input.attempt.finalImageUrl,
+      used_headline: input.attempt.usedHeadline,
+      image_direction: input.attempt.generated.imageDirection,
+      quality_score: input.attempt.generated.qualityScore,
+      quality_reasons: input.attempt.generated.qualityReasons,
+      strategy: input.attempt.generated.strategy,
+      alternatives: input.attempt.generated.alternatives,
+      safety_issues: input.attempt.safety.issues,
+      safety_score: input.attempt.safety.score,
+      generation_mode: input.generationMode,
+      image_provider: input.attempt.baseImage.provider,
+      image_model: input.attempt.baseImage.model,
+      prompt_text: input.attempt.generated.promptUsed,
+      prompt_seed: input.attempt.generationSeed,
+      estimated_cost_usd: input.estimatedCostUsd,
+      latency_ms: input.totalLatencyMs,
+      retry_attempt: input.attempt.retryAttempt,
+      parent_generation_id: input.parentGenerationId ?? null,
+      safety_judge_result: {
+        passed: input.attempt.finalJudge.passed,
+        score: input.attempt.finalJudge.score,
+        issues: input.attempt.finalJudge.issues,
+        rationale: input.attempt.finalJudge.rationale,
+        judgeModel: input.attempt.finalJudge.rawModel,
+      },
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    throw new HttpError(500, error.message, "DB_ERROR");
+  }
+
+  return Number(generation.id);
+}
+
 export async function generatePostForUser(params: {
   userId: string;
   brandProfileId: number;
@@ -108,6 +242,7 @@ export async function generatePostForUser(params: {
   trendBriefId?: number;
   trendSignalIds?: number[];
   refinementInstruction?: string;
+  generationMode?: "auto" | "native_ai" | "with_text" | "structured_layout";
 }) {
   if (!params.refinementInstruction?.trim()) {
     await enforceDailyPostLimit(params.userId);
@@ -170,127 +305,239 @@ export async function generatePostForUser(params: {
     }
   }
 
-  const generated = await generateCaption(
-    {
-      brand_name: brandProfile.brand_name,
-      industry: brandProfile.industry,
-      target_audience: brandProfile.target_audience ?? "",
-      brand_voice: brandProfile.brand_voice ?? "",
-      products: brandProfile.products,
-      banned_words: brandProfile.banned_words,
-      topics_to_avoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
-    },
-    params.platform,
-    params.postType,
-    params.topic,
-    params.tone,
-    trendContext,
-    {
-      objective: params.objective,
-      audienceSegment: params.audienceSegment,
-      proofPoints: params.proofPoints,
-      refinementInstruction: params.refinementInstruction,
-    }
-  );
-
-  const backgroundImageUrl = await generateImage(generated.imageDirection);
-  const usedHeadline = params.customHeadline?.trim() || generated.headlineText;
-
-  const formatted = formatForPlatform(params.platform, generated.caption, generated.hashtags);
-  const safety = reviewSafety({
-    caption: formatted.caption,
-    hashtags: formatted.hashtags,
-    platform: params.platform,
-    bannedWords: brandProfile.banned_words,
-    topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
-  });
-
-  if (!safety.passed) {
-    throw new HttpError(422, "Generated content failed safety checks", "SAFETY_REVIEW_FAILED", {
-      issues: safety.issues,
-    });
-  }
-
+  const generationMode = params.generationMode ?? "auto";
   const ctaText = brandProfile.website_url
     ? brandProfile.website_url.replace(/^https?:\/\//, "").replace(/\/$/, "")
     : brandProfile.brand_name;
 
-  const imageBuffer = await renderPostImage({
-    headline: usedHeadline,
-    subtext: formatted.caption.slice(0, 140),
-    brandColors: brandProfile.brand_colors ?? [],
-    brandLogo: brandProfile.logo_url,
-    brandName: brandProfile.brand_name,
-    backgroundImageUrl,
-    features: featureTags(params.postType, brandProfile.industry, params.platform),
-    ctaText,
-  });
+  async function createAttempt(retryAttempt: number, forcedRefinement?: string) {
+    const attemptStartedAt = Date.now();
+    const generationSeed = randomSeed();
+    const generated = await generateCaption(
+      {
+        brand_name: brandProfile.brand_name,
+        industry: brandProfile.industry,
+        target_audience: brandProfile.target_audience ?? "",
+        brand_voice: brandProfile.brand_voice ?? "",
+        products: brandProfile.products,
+        banned_words: brandProfile.banned_words,
+        topics_to_avoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+      },
+      params.platform,
+      params.postType,
+      params.topic,
+      params.tone,
+      trendContext,
+      {
+        objective: params.objective,
+        audienceSegment: params.audienceSegment,
+        proofPoints: params.proofPoints,
+        refinementInstruction: combineRefinementInstruction(params.refinementInstruction, forcedRefinement),
+      }
+    );
 
-  const filename = `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-  const { error: uploadError } = await supabase.storage.from("generated-posts").upload(filename, imageBuffer, {
-    contentType: "image/png",
-    upsert: false,
-  });
+    const baseImage = await generateImage(generated.imageDirection);
+    const usedHeadline = params.customHeadline?.trim() || generated.headlineText;
+    const formatted = formatForPlatform(params.platform, generated.caption, generated.hashtags);
+    const safety = reviewSafety({
+      caption: formatted.caption,
+      hashtags: formatted.hashtags,
+      platform: params.platform,
+      bannedWords: brandProfile.banned_words,
+      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+    });
 
-  if (uploadError) {
-    throw new HttpError(500, "Failed to upload image to storage", "STORAGE_UPLOAD_FAILED", {
-      reason: uploadError.message,
+    if (!safety.passed) {
+      throw new HttpError(422, "Generated content failed safety checks", "SAFETY_REVIEW_FAILED", {
+        issues: safety.issues,
+      });
+    }
+
+    let finalImageUrl = baseImage.url;
+    if (generationMode === "with_text" || generationMode === "structured_layout") {
+      const imageBuffer =
+        generationMode === "with_text"
+          ? await addTextOverlay(baseImage.url, usedHeadline)
+          : await renderPostImage({
+              headline: usedHeadline,
+              subtext: formatted.caption.slice(0, 140),
+              brandColors: brandProfile.brand_colors ?? [],
+              brandLogo: brandProfile.logo_url,
+              brandName: brandProfile.brand_name,
+              backgroundImageUrl: baseImage.url,
+              features: featureTags(params.postType, brandProfile.industry, params.platform),
+              ctaText,
+            });
+
+      const filename = `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const { error: uploadError } = await supabase.storage.from("generated-posts").upload(filename, imageBuffer, {
+        contentType: "image/png",
+        upsert: false,
+      });
+
+      if (uploadError) {
+        throw new HttpError(500, "Failed to upload image to storage", "STORAGE_UPLOAD_FAILED", {
+          reason: uploadError.message,
+        });
+      }
+
+      const { data: urlData } = supabase.storage.from("generated-posts").getPublicUrl(filename);
+      finalImageUrl = urlData.publicUrl;
+    }
+
+    const finalJudge = await runFinalSafetyJudge({
+      platform: params.platform,
+      caption: formatted.caption,
+      hashtags: formatted.hashtags,
+      imageDirection: generated.imageDirection,
+      trendSummary: trendContext?.summary,
+      bannedWords: brandProfile.banned_words,
+      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+    });
+
+    return {
+      retryAttempt,
+      generationSeed,
+      generated,
+      baseImage,
+      usedHeadline,
+      formatted,
+      finalImageUrl,
+      safety,
+      finalJudge,
+      attemptLatencyMs: Date.now() - attemptStartedAt,
+    };
+  }
+
+  const startMs = Date.now();
+  const firstAttempt = await createAttempt(0);
+  let activeAttempt = firstAttempt;
+  let parentGenerationId: number | undefined;
+
+  if (!firstAttempt.finalJudge.passed) {
+    const firstAttemptCostUsd = estimateGenerationCostUsd({
+      provider: firstAttempt.baseImage.provider,
+      promptLength: firstAttempt.generated.promptUsed.length,
+      judgeCalls: 1,
+    });
+    parentGenerationId = await persistGenerationRow({
+      userId: params.userId,
+      brandProfileId: params.brandProfileId,
+      trendBriefId: params.trendBriefId,
+      platform: params.platform,
+      postType: params.postType,
+      topic: params.topic,
+      tone: params.tone,
+      generationMode,
+      ctaText,
+      totalLatencyMs: firstAttempt.attemptLatencyMs,
+      estimatedCostUsd: firstAttemptCostUsd,
+      attempt: firstAttempt,
+    });
+
+    activeAttempt = await createAttempt(
+      1,
+      "Regenerate with stricter safety and originality. Avoid copyrighted characters, logos, slogans, lyrics, and trademarked visual motifs."
+    );
+  }
+
+  if (!activeAttempt.finalJudge.passed) {
+    const failedAttemptCostUsd = estimateGenerationCostUsd({
+      provider: activeAttempt.baseImage.provider,
+      promptLength: activeAttempt.generated.promptUsed.length,
+      judgeCalls: 1,
+    });
+
+    const failedGenerationId = await persistGenerationRow({
+      userId: params.userId,
+      brandProfileId: params.brandProfileId,
+      trendBriefId: params.trendBriefId,
+      platform: params.platform,
+      postType: params.postType,
+      topic: params.topic,
+      tone: params.tone,
+      generationMode,
+      ctaText,
+      parentGenerationId,
+      totalLatencyMs: Date.now() - startMs,
+      estimatedCostUsd: failedAttemptCostUsd,
+      attempt: activeAttempt,
+    });
+
+    throw new HttpError(422, "Generated content failed final safety/IP judge", "FINAL_SAFETY_JUDGE_FAILED", {
+      issues: activeAttempt.finalJudge.issues,
+      rationale: activeAttempt.finalJudge.rationale,
+      retried: Boolean(parentGenerationId),
+      generationId: failedGenerationId,
     });
   }
 
-  const { data: urlData } = supabase.storage.from("generated-posts").getPublicUrl(filename);
+  const latencyMs = Date.now() - startMs;
+  const activeAttemptCostUsd = estimateGenerationCostUsd({
+    provider: activeAttempt.baseImage.provider,
+    promptLength: activeAttempt.generated.promptUsed.length,
+    judgeCalls: 1,
+  });
+  const totalEstimatedCostUsd = Number(((parentGenerationId ? estimateGenerationCostUsd({
+    provider: firstAttempt.baseImage.provider,
+    promptLength: firstAttempt.generated.promptUsed.length,
+    judgeCalls: 1,
+  }) : 0) + activeAttemptCostUsd).toFixed(6));
 
-  const { data: generation, error } = await supabase
-    .from("generations")
-    .insert({
-      user_id: params.userId,
-      brand_profile_id: params.brandProfileId,
-      trend_brief_id: params.trendBriefId ?? null,
-      platform: params.platform,
-      post_type: params.postType,
-      topic: params.topic,
-      tone: params.tone,
-      caption: formatted.caption,
-      hashtags: formatted.hashtags,
-      cta: generated.cta ?? ctaText,
-      image_url: urlData.publicUrl,
-      used_headline: usedHeadline,
-      image_direction: generated.imageDirection,
-      quality_score: generated.qualityScore,
-      quality_reasons: generated.qualityReasons,
-      strategy: generated.strategy,
-      alternatives: generated.alternatives,
-      safety_issues: safety.issues,
-      safety_score: safety.score,
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    throw new HttpError(500, error.message, "DB_ERROR");
-  }
+  const generationId = await persistGenerationRow({
+    userId: params.userId,
+    brandProfileId: params.brandProfileId,
+    trendBriefId: params.trendBriefId,
+    platform: params.platform,
+    postType: params.postType,
+    topic: params.topic,
+    tone: params.tone,
+    generationMode,
+    ctaText,
+    parentGenerationId,
+    totalLatencyMs: latencyMs,
+    estimatedCostUsd: totalEstimatedCostUsd,
+    attempt: activeAttempt,
+  });
 
   await trackUsageEvent({
     userId: params.userId,
     eventType: "post_generated",
-    metadata: { generationId: generation.id, platform: params.platform },
+    metadata: {
+      generationId,
+      platform: params.platform,
+      generationMode,
+      provider: activeAttempt.baseImage.provider,
+      retryAttempt: activeAttempt.retryAttempt,
+      estimatedCostUsd: totalEstimatedCostUsd,
+      parentGenerationId: parentGenerationId ?? null,
+    },
   });
 
   return {
-    generationId: generation.id,
-    caption: formatted.caption,
-    hashtags: formatted.hashtags,
-    imageUrl: urlData.publicUrl,
-    usedHeadline,
-    imageDirection: generated.imageDirection,
+    generationId,
+    caption: activeAttempt.formatted.caption,
+    hashtags: activeAttempt.formatted.hashtags,
+    imageUrl: activeAttempt.finalImageUrl,
+    generationMode,
+    imageGeneration: {
+      provider: activeAttempt.baseImage.provider,
+      model: activeAttempt.baseImage.model,
+      seed: activeAttempt.generationSeed,
+      estimatedCostUsd: totalEstimatedCostUsd,
+      latencyMs,
+    },
+    safetyJudge: activeAttempt.finalJudge,
+    usedHeadline: activeAttempt.usedHeadline,
+    imageDirection: activeAttempt.generated.imageDirection,
     quality: {
-      score: generated.qualityScore,
-      reasons: generated.qualityReasons,
-      strategy: generated.strategy,
-      alternatives: generated.alternatives,
+      score: activeAttempt.generated.qualityScore,
+      reasons: activeAttempt.generated.qualityReasons,
+      strategy: activeAttempt.generated.strategy,
+      alternatives: activeAttempt.generated.alternatives,
     },
     delivery: platformDeliveryHints(params.platform),
     trendReferences,
-    safety,
+    safety: activeAttempt.safety,
   };
 }

@@ -5,6 +5,21 @@ import { env } from "../config/env";
 
 const replicate = env.replicateApiToken ? new Replicate({ auth: env.replicateApiToken }) : null;
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
 // ── Replicate (active) ──────────────────────────────────
 export interface ImageGenerationOptions {
   width?: number;
@@ -18,19 +33,23 @@ async function generateImageReplicate(imageDirection: string, options?: ImageGen
 
   const output = await retryWithBackoff(
     () =>
-      replicate.run("stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc", {
-        input: {
-          prompt: imageDirection,
-          negative_prompt:
-            "cartoon, anime, illustration, lowres, blurry, deformed face, malformed hands, extra fingers, watermark, logo, text, celebrity likeness, trademarked character",
-          num_inference_steps: 40,
-          guidance_scale: 7.5,
-          width: options?.width ?? 1080,
-          height: options?.height ?? 1350,
-        },
-      }),
-    3,
-    2000,
+      withTimeout(
+        replicate.run("stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc", {
+          input: {
+            prompt: imageDirection,
+            negative_prompt:
+              "cartoon, anime, illustration, lowres, blurry, deformed face, malformed hands, extra fingers, watermark, logo, text, celebrity likeness, trademarked character",
+            num_inference_steps: 34,
+            guidance_scale: 7,
+            width: options?.width ?? 1080,
+            height: options?.height ?? 1350,
+          },
+        }),
+        18000,
+        "replicate image generation"
+      ),
+    1,
+    900,
     (err) => {
       if (err instanceof Error) {
         const msg = err.message || "";

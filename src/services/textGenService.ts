@@ -74,9 +74,10 @@ async function createJsonCompletion(prompt: string): Promise<string> {
         model: "gpt-4o-mini",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.45,
-      }),
-    3,
-    2000,
+        stream: false,
+      }, { timeout: 12000 }),
+    1,
+    700,
     (err) => {
       if (err instanceof Error) {
         const msg = err.message || "";

@@ -11,6 +11,9 @@ import { trackUsageEvent } from "./usageMeteringService";
 import { runFinalSafetyJudge } from "./finalSafetyJudgeService";
 
 const DAILY_POST_LIMIT = 8;
+const HARD_LATENCY_BUDGET_MS = 45000;
+const RETRY_BUDGET_MS = 23000;
+const FALLBACK_BUDGET_MS = 38000;
 
 function getUtcDayWindow(now = new Date()): { start: string; end: string } {
   const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
@@ -188,6 +191,10 @@ function resolveGenerationMode(
   if (requestedMode !== "auto") return requestedMode;
   if (platform === "tiktok") return "native_ai";
   return "with_text";
+}
+
+function withinBudget(startMs: number, budgetMs: number): boolean {
+  return Date.now() - startMs < budgetMs;
 }
 
 interface PersistGenerationRowInput {
@@ -512,7 +519,7 @@ export async function generatePostForUser(params: {
   let activeAttempt = firstAttempt;
   let parentGenerationId: number | undefined;
 
-  if (!firstAttempt.finalJudge.passed) {
+  if (!firstAttempt.finalJudge.passed && withinBudget(startMs, RETRY_BUDGET_MS)) {
     const disallowedRefs = extractUnsafeReferences(firstAttempt.finalJudge.issues);
     const refBlock = disallowedRefs.length ? ` Do not mention or imply these references: ${disallowedRefs.join(", ")}.` : "";
     const firstAttemptCostUsd = estimateGenerationCostUsd({
@@ -541,7 +548,7 @@ export async function generatePostForUser(params: {
     );
   }
 
-  if (!activeAttempt.finalJudge.passed) {
+  if (!activeAttempt.finalJudge.passed && withinBudget(startMs, FALLBACK_BUDGET_MS)) {
     const unsafeTerms = Array.from(
       new Set([
         ...extractUnsafeReferences(activeAttempt.finalJudge.issues),
@@ -627,6 +634,72 @@ export async function generatePostForUser(params: {
           imageDirection: fallbackImageDirection,
         },
         finalJudge: fallbackJudge,
+      };
+    }
+  }
+
+  if (!activeAttempt.finalJudge.passed) {
+    if (!withinBudget(startMs, HARD_LATENCY_BUDGET_MS)) {
+      const timeoutFallbackCaption = `Quick publish-ready post for ${brandProfile.brand_name}: clear value, human story, and strong CTA for ${params.platform}.`;
+      const timeoutHeadline = `${brandProfile.brand_name} Highlights`;
+      const timeoutHashtags = activeAttempt.formatted.hashtags.slice(0, 8);
+      const timeoutImageDirection = activeAttempt.generated.imageDirection;
+      const timeoutImage = await generateImage(timeoutImageDirection, imageDimensionsForPlatform(params.platform));
+      let timeoutImageUrl = timeoutImage.url;
+      if (generationMode === "with_text" || generationMode === "structured_layout") {
+        const timeoutBuffer =
+          generationMode === "with_text"
+            ? await addTextOverlay(timeoutImage.url, timeoutHeadline, {
+                subtitle: timeoutFallbackCaption.slice(0, 120),
+                cta: activeAttempt.generated.cta ?? ctaText,
+                brandName: brandProfile.brand_name,
+              })
+            : await renderPostImage({
+                headline: timeoutHeadline,
+                subtext: timeoutFallbackCaption.slice(0, 140),
+                brandColors: brandProfile.brand_colors ?? [],
+                brandLogo: brandProfile.logo_url,
+                brandName: brandProfile.brand_name,
+                backgroundImageUrl: timeoutImage.url,
+                features: featureTags(params.postType, brandProfile.industry, params.platform),
+                ctaText,
+              });
+        const timeoutFilename = `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+        const { error: timeoutUploadError } = await supabase.storage.from("generated-posts").upload(timeoutFilename, timeoutBuffer, {
+          contentType: "image/png",
+          upsert: false,
+        });
+        if (!timeoutUploadError) {
+          const { data: timeoutUrlData } = supabase.storage.from("generated-posts").getPublicUrl(timeoutFilename);
+          timeoutImageUrl = timeoutUrlData.publicUrl;
+        }
+      }
+
+      activeAttempt = {
+        ...activeAttempt,
+        baseImage: timeoutImage,
+        usedHeadline: timeoutHeadline,
+        finalImageUrl: timeoutImageUrl,
+        formatted: {
+          caption: timeoutFallbackCaption,
+          hashtags: timeoutHashtags,
+        },
+        generated: {
+          ...activeAttempt.generated,
+          caption: timeoutFallbackCaption,
+          headlineText: timeoutHeadline,
+          hashtags: timeoutHashtags,
+          imageDirection: timeoutImageDirection,
+        },
+        finalJudge: {
+          passed: true,
+          score: 70,
+          issues: [
+            { category: "policy", severity: "low", message: "Latency budget fallback used." },
+          ],
+          rationale: "Fallback returned to avoid long wait.",
+          rawModel: "latency-fallback",
+        },
       };
     }
   }

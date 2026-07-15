@@ -1,7 +1,5 @@
-import OpenAI from "openai";
+import { falCompletion } from "./falTextService";
 import { env } from "../config/env";
-
-const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
 export interface FinalSafetyJudgeIssue {
   category: "ip" | "policy" | "brand" | "platform";
@@ -66,14 +64,12 @@ JSON schema:
 }`;
 
   try {
-    const result = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
+    const raw = await falCompletion(prompt, {
+      model: "google/gemini-2.5-flash-lite",
       temperature: 0,
-      stream: false,
-    }, { timeout: 8000 });
+      timeoutMs: 8000,
+    });
 
-    const raw = (result.choices[0]?.message?.content ?? "").trim();
     const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
     const parsed = JSON.parse(cleaned) as {
       passed?: boolean;

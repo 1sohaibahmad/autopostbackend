@@ -336,11 +336,10 @@ export async function generatePostForUser(params: {
   refinementInstruction?: string;
   generationMode?: "auto" | "native_ai" | "with_text" | "structured_layout";
 }) {
-  if (!params.refinementInstruction?.trim()) {
-    await enforceDailyPostLimit(params.userId);
-  }
+  await enforceDailyPostLimit(params.userId);
 
   const brandProfile = await getBrandProfileForUserById(params.userId, params.brandProfileId);
+  const topicsToAvoid = Array.isArray(brandProfile.topics_to_avoid) ? brandProfile.topics_to_avoid : [];
 
   let trendContext: { summary?: string; adaptationAngle?: string; objective?: string } | undefined;
   let trendReferences: Array<{ id: number; title: string; source?: string; url?: string }> = [];
@@ -398,6 +397,7 @@ export async function generatePostForUser(params: {
   }
 
   const generationMode = resolveGenerationMode(params.generationMode ?? "auto", params.platform);
+  const effectiveTopic = params.topic.trim() || trendReferences[0]?.title || `${brandProfile.industry} campaign`;
   const ctaText = brandProfile.website_url
     ? brandProfile.website_url.replace(/^https?:\/\//, "").replace(/\/$/, "")
     : brandProfile.brand_name;
@@ -413,11 +413,11 @@ export async function generatePostForUser(params: {
         brand_voice: brandProfile.brand_voice ?? "",
         products: brandProfile.products,
         banned_words: brandProfile.banned_words,
-        topics_to_avoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+        topics_to_avoid: topicsToAvoid,
       },
       params.platform,
       params.postType,
-      params.topic,
+      effectiveTopic,
       params.tone,
       trendContext,
       {
@@ -445,7 +445,7 @@ export async function generatePostForUser(params: {
       hashtags: formatted.hashtags,
       platform: params.platform,
       bannedWords: brandProfile.banned_words,
-      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+      topicsToAvoid,
     });
 
     if (!safety.passed) {
@@ -497,7 +497,7 @@ export async function generatePostForUser(params: {
       imageDirection,
       trendSummary: trendContext?.summary,
       bannedWords: brandProfile.banned_words,
-      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+      topicsToAvoid,
     });
 
     return {
@@ -533,7 +533,7 @@ export async function generatePostForUser(params: {
       trendBriefId: params.trendBriefId,
       platform: params.platform,
       postType: params.postType,
-      topic: params.topic,
+      topic: effectiveTopic,
       tone: params.tone,
       generationMode,
       ctaText,
@@ -553,7 +553,7 @@ export async function generatePostForUser(params: {
       new Set([
         ...extractUnsafeReferences(activeAttempt.finalJudge.issues),
         ...(brandProfile.banned_words ?? []),
-        ...(brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : []),
+        ...topicsToAvoid,
       ])
     )
       .map((item) => String(item).trim())
@@ -612,7 +612,7 @@ export async function generatePostForUser(params: {
       imageDirection: fallbackImageDirection,
       trendSummary: trendContext?.summary,
       bannedWords: brandProfile.banned_words,
-      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+      topicsToAvoid,
     });
 
     const fallbackHasHigh = fallbackJudge.issues.some((issue) => issue.severity === "high");
@@ -640,7 +640,16 @@ export async function generatePostForUser(params: {
 
   if (!activeAttempt.finalJudge.passed) {
     if (!withinBudget(startMs, HARD_LATENCY_BUDGET_MS)) {
-      const timeoutFallbackCaption = `Quick publish-ready post for ${brandProfile.brand_name}: clear value, human story, and strong CTA for ${params.platform}.`;
+      const timeoutUnsafeTerms = [
+        ...(brandProfile.banned_words ?? []),
+        ...topicsToAvoid,
+      ];
+      const timeoutSourceCaption =
+        activeAttempt.generated.alternatives[0]?.caption ?? activeAttempt.formatted.caption;
+      const timeoutCaptionCandidate =
+        sanitizeTextByTerms(timeoutSourceCaption, timeoutUnsafeTerms) ||
+        sanitizeTextByTerms(activeAttempt.formatted.caption, timeoutUnsafeTerms);
+      const timeoutFallbackCaption = timeoutCaptionCandidate || `${brandProfile.brand_name} campaign update.`;
       const timeoutHeadline = `${brandProfile.brand_name} Highlights`;
       const timeoutHashtags = activeAttempt.formatted.hashtags.slice(0, 8);
       const timeoutImageDirection = activeAttempt.generated.imageDirection;
@@ -717,7 +726,7 @@ export async function generatePostForUser(params: {
       trendBriefId: params.trendBriefId,
       platform: params.platform,
       postType: params.postType,
-      topic: params.topic,
+      topic: effectiveTopic,
       tone: params.tone,
       generationMode,
       ctaText,
@@ -753,7 +762,7 @@ export async function generatePostForUser(params: {
     trendBriefId: params.trendBriefId,
     platform: params.platform,
     postType: params.postType,
-    topic: params.topic,
+    topic: effectiveTopic,
     tone: params.tone,
     generationMode,
     ctaText,

@@ -20,6 +20,21 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
+async function validateGeneratedImageUrl(url: string, options?: ImageGenerationOptions): Promise<void> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(7000) });
+  if (!response.ok) {
+    throw new Error(`Generated image fetch failed (${response.status})`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const meta = await sharp(buffer).metadata();
+  const minWidth = Math.round((options?.width ?? 1080) * 0.72);
+  const minHeight = Math.round((options?.height ?? 1350) * 0.72);
+  if (!meta.width || !meta.height || meta.width < minWidth || meta.height < minHeight) {
+    throw new Error(`Generated image too small (${meta.width ?? 0}x${meta.height ?? 0})`);
+  }
+}
+
 // ── Replicate (active) ──────────────────────────────────
 export interface ImageGenerationOptions {
   width?: number;
@@ -86,6 +101,8 @@ async function generateImageReplicate(imageDirection: string, options?: ImageGen
     throw new Error("Extracted image URL is not a string: " + typeof finalUrl);
   }
 
+  await validateGeneratedImageUrl(finalUrl, options);
+
   return finalUrl;
 }
 
@@ -107,9 +124,14 @@ export async function generateImage(imageDirection: string, options?: ImageGener
       provider: "replicate",
       model: "stability-ai/sdxl",
     };
-  } catch {
+  } catch (primaryError) {
+    if (!env.allowLowQualityImageFallback) {
+      throw new Error(`Primary image provider unavailable: ${primaryError instanceof Error ? primaryError.message : "unknown error"}`);
+    }
+    const fallbackUrl = generateImagePollinations(imageDirection, options);
+    await validateGeneratedImageUrl(fallbackUrl, options);
     return {
-      url: generateImagePollinations(imageDirection, options),
+      url: fallbackUrl,
       provider: "pollinations",
       model: "pollinations/image",
     };
@@ -155,8 +177,12 @@ export async function addTextOverlay(
   const arrayBuf = await response.arrayBuffer();
   const inputBuffer = Buffer.from(arrayBuf);
 
-  const image = sharp(inputBuffer);
-  const metadata = await image.metadata();
+  let image = sharp(inputBuffer);
+  let metadata = await image.metadata();
+  if ((metadata.width ?? 0) < 900 || (metadata.height ?? 0) < 900) {
+    image = image.resize(1080, 1350, { fit: "cover", kernel: sharp.kernel.lanczos3 }).sharpen();
+    metadata = await image.metadata();
+  }
   const w = metadata.width ?? 1024;
   const h = metadata.height ?? 1024;
 

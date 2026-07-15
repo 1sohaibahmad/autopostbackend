@@ -69,3 +69,9 @@ export const extractImageContextSchema = z.object({
   imageUrl: z.string().url(),
   focus: z.string().trim().max(240).optional(),
 });
+
+export const trendExamplesQuerySchema = z.object({
+  trendTitle: z.string().trim().min(2).max(180),
+  platform: platformSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(20).default(6),
+});

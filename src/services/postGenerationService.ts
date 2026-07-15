@@ -115,6 +115,7 @@ export async function generatePostForUser(params: {
   const brandProfile = await getBrandProfileForUserById(params.userId, params.brandProfileId);
 
   let trendContext: { summary?: string; adaptationAngle?: string; objective?: string } | undefined;
+  let trendReferences: Array<{ id: number; title: string; source?: string; url?: string }> = [];
   if (params.trendBriefId) {
     const { data: trendBrief } = await supabase
       .from("trend_briefs")
@@ -134,7 +135,7 @@ export async function generatePostForUser(params: {
   if (!trendContext && params.trendSignalIds?.length) {
     const { data: selectedSignals } = await supabase
       .from("trend_signals")
-      .select("id,title,description,tags,velocity_score")
+      .select("id,title,description,tags,velocity_score,source,url")
       .eq("user_id", params.userId)
       .in("id", params.trendSignalIds);
 
@@ -142,6 +143,7 @@ export async function generatePostForUser(params: {
       const ranked = [...selectedSignals].sort((a, b) => (Number(b.velocity_score) || 0) - (Number(a.velocity_score) || 0));
       const summaryLines = ranked.slice(0, 3).map((s) => `- ${s.title}: ${String(s.description).slice(0, 180)}`);
       const topTags = Array.from(new Set(ranked.flatMap((s: any) => s.tags ?? []))).slice(0, 8);
+      trendReferences = ranked.slice(0, 5).map((s: any) => ({ id: Number(s.id), title: String(s.title), source: s.source ?? undefined, url: s.url ?? undefined }));
 
       trendContext = {
         summary: `Live trend bundle:\n${summaryLines.join("\n")}`,
@@ -271,6 +273,7 @@ export async function generatePostForUser(params: {
       alternatives: generated.alternatives,
     },
     delivery: platformDeliveryHints(params.platform),
+    trendReferences,
     safety,
   };
 }

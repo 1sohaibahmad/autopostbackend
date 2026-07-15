@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { createDraft } from "./draftService";
 import { generatePostForUser } from "./postGenerationService";
 import { createTrendAdaptationBrief } from "./trendAdaptationService";
-import { listTrendMatches } from "./trendSignalService";
+import { discoverTrendSignals, ingestTrendSignals, listTrendMatches, recomputeTrendMatches } from "./trendSignalService";
 import { trackUsageEvent } from "./usageMeteringService";
 
 export async function upsertAutopilotSettings(
@@ -70,6 +70,10 @@ export async function runAutopilot(params: {
   const minScore = settings?.min_relevance_score ?? 70;
   const effectiveMaxDrafts = Math.min(params.maxDrafts, settings?.max_drafts_per_run ?? params.maxDrafts);
 
+  if (settings && settings.enabled === false) {
+    throw new HttpError(409, "Autopilot is disabled in settings", "AUTOPILOT_DISABLED");
+  }
+
   const { data: run, error: runError } = await supabase
     .from("autopilot_runs")
     .insert({
@@ -86,6 +90,49 @@ export async function runAutopilot(params: {
     throw new HttpError(500, runError.message, "DB_ERROR");
   }
 
+  const discovered = await discoverTrendSignals({
+    userId: params.userId,
+    limit: 60,
+    platform: params.platform,
+    language: "en",
+    region: "global",
+    brandProfileId: params.brandProfileId,
+  });
+
+  const bySource = new Map<string, Array<(typeof discovered.data)[number]>>();
+  for (const signal of discovered.data) {
+    const list = bySource.get(signal.source) ?? [];
+    list.push(signal);
+    bySource.set(signal.source, list);
+  }
+
+  let ingestedTotal = 0;
+  for (const [source, signals] of bySource.entries()) {
+    const ingested = await ingestTrendSignals(params.userId, {
+      source,
+      signals: signals.map((signal) => ({
+        externalId: signal.externalId,
+        title: signal.title,
+        description: signal.description,
+        url: signal.url,
+        tags: signal.tags,
+        platformHints: signal.platformHints,
+        language: signal.language,
+        region: signal.region,
+        velocityScore: signal.velocityScore,
+        publishedAt: signal.publishedAt,
+      })),
+    });
+    ingestedTotal += ingested.total;
+  }
+
+  await recomputeTrendMatches({
+    userId: params.userId,
+    brandProfileId: params.brandProfileId,
+    platform: params.platform,
+    limitSignals: 150,
+  });
+
   const candidates = await listTrendMatches({
     userId: params.userId,
     brandProfileId: params.brandProfileId,
@@ -94,7 +141,20 @@ export async function runAutopilot(params: {
     limit: 20,
   });
 
-  const topMatches = candidates.slice(0, effectiveMaxDrafts);
+  const fallbackMatches = discovered.data
+    .filter((signal) => signal.brandSafetyRating !== "avoid")
+    .slice(0, Math.max(effectiveMaxDrafts, 1))
+    .map((signal) => ({
+      id: `fallback-${signal.externalId}`,
+      relevance_score: signal.relevanceScore,
+      trend_signals: {
+        id: 0,
+        title: signal.title,
+        description: signal.description,
+      },
+    }));
+
+  const topMatches = (candidates.length ? candidates : (fallbackMatches as any[])).slice(0, effectiveMaxDrafts);
   const createdDrafts: Array<{ draftId: number; signalId: number; score: number }> = [];
   const errors: string[] = [];
 
@@ -132,7 +192,9 @@ export async function runAutopilot(params: {
         status: "draft",
       });
 
-      await supabase.from("trend_relevance_matches").update({ status: "consumed" }).eq("id", (match as any).id);
+      if (!String((match as any).id).startsWith("fallback-")) {
+        await supabase.from("trend_relevance_matches").update({ status: "consumed" }).eq("id", (match as any).id);
+      }
 
       createdDrafts.push({
         draftId: draft.id,
@@ -174,6 +236,8 @@ export async function runAutopilot(params: {
   return {
     runId: run.id,
     status,
+    discovered: discovered.data.length,
+    ingested: ingestedTotal,
     evaluated: candidates.length,
     createdDrafts,
     errors,

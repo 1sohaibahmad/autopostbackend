@@ -27,6 +27,15 @@ type DiscoverySignal = {
   explanation?: string;
 };
 
+type TrendExample = {
+  source: string;
+  title: string;
+  url: string;
+  excerpt: string;
+  publishedAt?: string;
+  engagementHint?: string;
+};
+
 async function rerankSignalsWithAi(params: {
   rankedSignals: DiscoverySignal[];
   niche?: string;
@@ -296,6 +305,36 @@ async function discoverFromDevTo(region: string, language: string): Promise<Disc
   }));
 }
 
+async function discoverFromMastodon(region: string, language: string): Promise<DiscoverySignal[]> {
+  const json = await fetchJson<Array<{ name: string; url?: string; history?: Array<{ day: string; uses: string; accounts: string }> }>>(
+    "https://mastodon.social/api/v1/trends/tags?limit=20"
+  );
+
+  return (json ?? []).slice(0, 20).map((item) => {
+    const latestHistory = item.history?.[0];
+    const uses = Number(latestHistory?.uses ?? 0);
+    const accounts = Number(latestHistory?.accounts ?? 0);
+    const velocity = Math.max(35, Math.min(100, Math.round(Math.log10(uses + 1) * 35 + Math.log10(accounts + 1) * 20 + 35)));
+    const title = item.name.startsWith("#") ? item.name : `#${item.name}`;
+
+    return {
+      source: "mastodon",
+      externalId: `mastodon-${safeUrlKey(item.name)}`,
+      title,
+      description: `Trending social tag ${title} with active discussion.`,
+      url: item.url,
+      tags: Array.from(tokenize(`${title} social trend`)).slice(0, 8),
+      platformHints: ["x", "linkedin", "instagram"],
+      language,
+      region,
+      velocityScore: velocity,
+      publishedAt: new Date().toISOString(),
+      relevanceScore: 0,
+      reasons: ["source:mastodon_trends"],
+    };
+  });
+}
+
 function redditSubredditsForNiche(niche?: string): string[] {
   const n = (niche ?? "").toLowerCase();
   if (/(saas|startup|b2b|product)/.test(n)) return ["startups", "Entrepreneur", "SaaS", "marketing"];
@@ -358,7 +397,13 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
   const nicheScore = nicheTokens.size ? overlapScore(nicheTokens, signalTokens) : 40;
   const brandScore = contextTokens.size ? overlapScore(contextTokens, signalTokens) : 50;
   const platformBoost = platform && signal.platformHints.includes(platform) ? 12 : 0;
-  const relevance = Math.round(Math.min(100, nicheScore * 0.3 + brandScore * 0.45 + signal.velocityScore * 0.25 + platformBoost));
+  const sourceBoost = ["reddit", "mastodon"].includes(signal.source) ? 8 : ["google_news"].includes(signal.source) ? -4 : 0;
+  const freshnessBoost = signal.publishedAt
+    ? Math.max(0, 10 - Math.floor((Date.now() - new Date(signal.publishedAt).getTime()) / (1000 * 60 * 60 * 3)))
+    : 0;
+  const relevance = Math.round(
+    Math.min(100, nicheScore * 0.28 + brandScore * 0.42 + signal.velocityScore * 0.24 + platformBoost + sourceBoost + freshnessBoost)
+  );
   return {
     ...signal,
     relevanceScore: relevance,
@@ -367,6 +412,8 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
       `brand_match:${brandScore}`,
       `velocity:${signal.velocityScore}`,
       `platform_boost:${platformBoost}`,
+      `source_boost:${sourceBoost}`,
+      `freshness_boost:${freshnessBoost}`,
     ],
   };
 }
@@ -435,11 +482,17 @@ export async function discoverTrendSignals(params: {
     discoverFromGoogleNews(params.niche, params.region, params.language),
     discoverFromDevTo(params.region, params.language),
     discoverFromReddit(params.niche, params.region, params.language),
+    discoverFromMastodon(params.region, params.language),
   ]);
 
   const merged = settled
     .filter((s): s is PromiseFulfilledResult<DiscoverySignal[]> => s.status === "fulfilled")
     .flatMap((s) => s.value)
+    .filter((signal) => {
+      if (!signal.publishedAt) return true;
+      const ageMs = Date.now() - new Date(signal.publishedAt).getTime();
+      return ageMs <= 24 * 60 * 60 * 1000;
+    })
     .map((signal) => computeRelevance(signal, contextTokens, nicheTokens, params.platform));
 
   const deduped = new Map<string, DiscoverySignal>();
@@ -467,10 +520,52 @@ export async function discoverTrendSignals(params: {
 
   return {
     generatedAt: new Date().toISOString(),
-    sourcesUsed: ["producthunt", "hackernews", "google_news", "devto", "reddit"],
+    sourcesUsed: ["producthunt", "hackernews", "google_news", "devto", "reddit", "mastodon"],
     fallbackCount: settled.filter((s) => s.status === "rejected").length,
     data: classified.slice(0, params.limit),
   };
+}
+
+export async function fetchTrendExamples(params: {
+  trendTitle: string;
+  platform?: string;
+  limit: number;
+}): Promise<TrendExample[]> {
+  const q = encodeURIComponent(params.trendTitle.trim());
+  const reddit = await fetchJson<{
+    data?: {
+      children?: Array<{
+        data?: {
+          title: string;
+          selftext?: string;
+          permalink?: string;
+          created_utc?: number;
+          score?: number;
+          num_comments?: number;
+        };
+      }>;
+    };
+  }>(`https://www.reddit.com/search.json?q=${q}&sort=top&t=day&limit=${Math.max(5, params.limit * 2)}`);
+
+  const examples: TrendExample[] = (reddit.data?.children ?? [])
+    .map((item) => item.data)
+    .filter((item): item is NonNullable<typeof item> => Boolean(item?.title && item?.permalink))
+    .map((item) => ({
+      source: "reddit",
+      title: item.title,
+      url: `https://www.reddit.com${item.permalink}`,
+      excerpt: (item.selftext || item.title).slice(0, 240),
+      publishedAt: item.created_utc ? new Date(item.created_utc * 1000).toISOString() : undefined,
+      engagementHint: `score:${Number(item.score) || 0} comments:${Number(item.num_comments) || 0}`,
+    }));
+
+  if (params.platform) {
+    return examples
+      .filter((item) => platformHintsFromText(`${item.title} ${item.excerpt}`).includes(params.platform!))
+      .slice(0, params.limit);
+  }
+
+  return examples.slice(0, params.limit);
 }
 
 export async function ingestTrendSignals(

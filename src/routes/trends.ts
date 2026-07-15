@@ -1,10 +1,16 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/requireAuth";
 import { validateRequest } from "../middleware/validate";
-import { discoverTrendSignalsQuerySchema, extractImageContextSchema, ingestTrendSignalsSchema, listTrendSignalsQuerySchema } from "../schemas/agenticSchemas";
+import {
+  discoverTrendSignalsQuerySchema,
+  extractImageContextSchema,
+  ingestTrendSignalsSchema,
+  listTrendSignalsQuerySchema,
+  trendExamplesQuerySchema,
+} from "../schemas/agenticSchemas";
 import { createTrendBriefSchema } from "../schemas/trendSchemas";
 import { createTrendAdaptationBrief } from "../services/trendAdaptationService";
-import { discoverTrendSignals, ingestTrendSignals, listTrendSignals } from "../services/trendSignalService";
+import { discoverTrendSignals, fetchTrendExamples, ingestTrendSignals, listTrendSignals } from "../services/trendSignalService";
 import { extractImageContentContext } from "../services/imageInsightService";
 
 const router = Router();
@@ -71,6 +77,19 @@ router.post("/extract-image-context", requireAuth, validateRequest({ body: extra
     const data = await extractImageContentContext({
       imageUrl: req.body.imageUrl,
       focus: req.body.focus,
+    });
+    res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/examples", requireAuth, validateRequest({ query: trendExamplesQuerySchema }), async (req, res, next) => {
+  try {
+    const data = await fetchTrendExamples({
+      trendTitle: String(req.query.trendTitle),
+      platform: req.query.platform as string | undefined,
+      limit: Number(req.query.limit),
     });
     res.json({ data });
   } catch (error) {

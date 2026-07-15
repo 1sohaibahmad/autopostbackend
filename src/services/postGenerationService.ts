@@ -146,8 +146,48 @@ function extractUnsafeReferences(issues: Array<{ message: string }>): string[] {
     for (const raw of quoted) {
       tokens.add(raw.replace(/^['\"]|['\"]$/g, "").trim());
     }
+
+    const toRef = issue.message.match(/reference to\s+([a-z0-9_-]{2,40})/i);
+    if (toRef?.[1]) {
+      tokens.add(toRef[1].trim());
+    }
+
+    const brandLike = issue.message.match(/\b([A-Z][A-Za-z0-9&-]{2,30})\b/g) ?? [];
+    for (const token of brandLike.slice(0, 4)) {
+      if (!["Reference", "The", "Additionally", "Topic", "Platform", "Brand"].includes(token)) {
+        tokens.add(token.trim());
+      }
+    }
   }
   return Array.from(tokens).slice(0, 6);
+}
+
+function sanitizeTextByTerms(input: string, terms: string[]): string {
+  let output = input;
+  for (const term of terms) {
+    const cleaned = term.trim();
+    if (!cleaned) continue;
+    const escaped = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    output = output.replace(new RegExp(`\\b${escaped}\\b`, "gi"), "");
+  }
+  return output.replace(/\s{2,}/g, " ").replace(/\s+([.,!?])/g, "$1").trim();
+}
+
+function sanitizeHashtagsByTerms(tags: string[], terms: string[]): string[] {
+  const loweredTerms = new Set(terms.map((term) => term.toLowerCase()));
+  return tags.filter((tag) => {
+    const normalized = tag.replace(/^#/, "").toLowerCase();
+    return !loweredTerms.has(normalized);
+  });
+}
+
+function resolveGenerationMode(
+  requestedMode: "auto" | "native_ai" | "with_text" | "structured_layout",
+  platform: "instagram" | "facebook" | "linkedin" | "x" | "tiktok" | "pinterest"
+): "native_ai" | "with_text" | "structured_layout" {
+  if (requestedMode !== "auto") return requestedMode;
+  if (platform === "tiktok") return "native_ai";
+  return "with_text";
 }
 
 interface PersistGenerationRowInput {
@@ -350,7 +390,7 @@ export async function generatePostForUser(params: {
     }
   }
 
-  const generationMode = params.generationMode ?? "auto";
+  const generationMode = resolveGenerationMode(params.generationMode ?? "auto", params.platform);
   const ctaText = brandProfile.website_url
     ? brandProfile.website_url.replace(/^https?:\/\//, "").replace(/\/$/, "")
     : brandProfile.brand_name;
@@ -411,7 +451,11 @@ export async function generatePostForUser(params: {
     if (generationMode === "with_text" || generationMode === "structured_layout") {
       const imageBuffer =
         generationMode === "with_text"
-          ? await addTextOverlay(baseImage.url, usedHeadline)
+          ? await addTextOverlay(baseImage.url, usedHeadline, {
+              subtitle: formatted.caption.slice(0, 120),
+              cta: generated.cta ?? ctaText,
+              brandName: brandProfile.brand_name,
+            })
           : await renderPostImage({
               headline: usedHeadline,
               subtext: formatted.caption.slice(0, 140),
@@ -495,6 +539,96 @@ export async function generatePostForUser(params: {
       1,
       `Regenerate with stricter safety and originality. Avoid copyrighted characters, logos, slogans, lyrics, trademarked visual motifs, and celebrity references.${refBlock}`
     );
+  }
+
+  if (!activeAttempt.finalJudge.passed) {
+    const unsafeTerms = Array.from(
+      new Set([
+        ...extractUnsafeReferences(activeAttempt.finalJudge.issues),
+        ...(brandProfile.banned_words ?? []),
+        ...(brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : []),
+      ])
+    )
+      .map((item) => String(item).trim())
+      .filter(Boolean)
+      .slice(0, 20);
+
+    const fallbackCaptionRaw = sanitizeTextByTerms(activeAttempt.formatted.caption, unsafeTerms);
+    const fallbackCaption =
+      fallbackCaptionRaw.length >= 60
+        ? fallbackCaptionRaw
+        : `Fresh campaign concept for ${brandProfile.brand_name}: practical value, clear visual story, and a confident CTA for ${params.platform}.`;
+    const fallbackHeadlineRaw = sanitizeTextByTerms(activeAttempt.usedHeadline, unsafeTerms);
+    const fallbackHeadline = fallbackHeadlineRaw || `${brandProfile.brand_name} Update`;
+    const fallbackHashtags = sanitizeHashtagsByTerms(activeAttempt.formatted.hashtags, unsafeTerms).slice(0, 12);
+    const fallbackImageDirection = sanitizeTextByTerms(activeAttempt.generated.imageDirection, unsafeTerms);
+
+    const fallbackBaseImage = await generateImage(fallbackImageDirection, imageDimensionsForPlatform(params.platform));
+    let fallbackImageUrl = fallbackBaseImage.url;
+    if (generationMode === "with_text" || generationMode === "structured_layout") {
+      const fallbackBuffer =
+        generationMode === "with_text"
+          ? await addTextOverlay(fallbackBaseImage.url, fallbackHeadline, {
+              subtitle: fallbackCaption.slice(0, 120),
+              cta: activeAttempt.generated.cta ?? ctaText,
+              brandName: brandProfile.brand_name,
+            })
+          : await renderPostImage({
+              headline: fallbackHeadline,
+              subtext: fallbackCaption.slice(0, 140),
+              brandColors: brandProfile.brand_colors ?? [],
+              brandLogo: brandProfile.logo_url,
+              brandName: brandProfile.brand_name,
+              backgroundImageUrl: fallbackBaseImage.url,
+              features: featureTags(params.postType, brandProfile.industry, params.platform),
+              ctaText,
+            });
+
+      const fallbackFilename = `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const { error: fallbackUploadError } = await supabase.storage.from("generated-posts").upload(fallbackFilename, fallbackBuffer, {
+        contentType: "image/png",
+        upsert: false,
+      });
+      if (fallbackUploadError) {
+        throw new HttpError(500, "Failed to upload image to storage", "STORAGE_UPLOAD_FAILED", {
+          reason: fallbackUploadError.message,
+        });
+      }
+      const { data: fallbackUrlData } = supabase.storage.from("generated-posts").getPublicUrl(fallbackFilename);
+      fallbackImageUrl = fallbackUrlData.publicUrl;
+    }
+
+    const fallbackJudge = await runFinalSafetyJudge({
+      platform: params.platform,
+      caption: fallbackCaption,
+      hashtags: fallbackHashtags,
+      imageDirection: fallbackImageDirection,
+      trendSummary: trendContext?.summary,
+      bannedWords: brandProfile.banned_words,
+      topicsToAvoid: brandProfile.topics_to_avoid ? [brandProfile.topics_to_avoid] : [],
+    });
+
+    const fallbackHasHigh = fallbackJudge.issues.some((issue) => issue.severity === "high");
+    if (!fallbackHasHigh) {
+      activeAttempt = {
+        ...activeAttempt,
+        baseImage: fallbackBaseImage,
+        usedHeadline: fallbackHeadline,
+        finalImageUrl: fallbackImageUrl,
+        formatted: {
+          caption: fallbackCaption,
+          hashtags: fallbackHashtags,
+        },
+        generated: {
+          ...activeAttempt.generated,
+          caption: fallbackCaption,
+          headlineText: fallbackHeadline,
+          hashtags: fallbackHashtags,
+          imageDirection: fallbackImageDirection,
+        },
+        finalJudge: fallbackJudge,
+      };
+    }
   }
 
   if (!activeAttempt.finalJudge.passed) {

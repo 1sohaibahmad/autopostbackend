@@ -122,7 +122,12 @@ export async function generateImage(imageDirection: string, options?: ImageGener
 
 export async function addTextOverlay(
   imageUrl: string,
-  overlayText: string
+  overlayText: string,
+  options?: {
+    subtitle?: string;
+    cta?: string;
+    brandName?: string;
+  }
 ): Promise<Buffer> {
   const response = await fetch(imageUrl);
   if (!response.ok) {
@@ -136,37 +141,81 @@ export async function addTextOverlay(
   const w = metadata.width ?? 1024;
   const h = metadata.height ?? 1024;
 
-  const fontSize = Math.round(w / 20);
-  const bandHeight = fontSize * 3.5;
-  const bandY = Math.round(h * 0.62);
+  const titleSize = Math.max(34, Math.round(w / 19));
+  const subtitleSize = Math.max(18, Math.round(w / 38));
+  const badgeSize = Math.max(14, Math.round(w / 58));
 
-  const lines = wrapText(overlayText, Math.round(w * 0.8), fontSize);
-  const textSvg = lines
+  const cardX = Math.round(w * 0.06);
+  const cardY = Math.round(h * 0.08);
+  const cardW = Math.round(w * 0.88);
+  const cardH = Math.round(h * 0.42);
+
+  const titleLines = wrapText(overlayText.toUpperCase(), Math.round(cardW * 0.86), titleSize).slice(0, 3);
+  const subtitle = options?.subtitle?.trim() ? options.subtitle.trim() : "Designed to stop the scroll and drive action.";
+  const subtitleLines = wrapText(subtitle, Math.round(cardW * 0.84), subtitleSize).slice(0, 2);
+  const cta = (options?.cta?.trim() || "Learn More").slice(0, 28).toUpperCase();
+  const brand = (options?.brandName?.trim() || "").slice(0, 38).toUpperCase();
+
+  const titleSvg = titleLines
     .map(
       (line, i) =>
-        `<tspan x="${w / 2}" dy="${i === 0 ? 0 : fontSize * 1.3}">${escapeXml(line)}</tspan>`
+        `<tspan x="${cardX + cardW * 0.08}" dy="${i === 0 ? 0 : titleSize * 1.12}">${escapeXml(line)}</tspan>`
     )
     .join("");
+
+  const subtitleSvg = subtitleLines
+    .map(
+      (line, i) =>
+        `<tspan x="${cardX + cardW * 0.08}" dy="${i === 0 ? 0 : subtitleSize * 1.28}">${escapeXml(line)}</tspan>`
+    )
+    .join("");
+
+  const titleBlockY = cardY + Math.round(cardH * 0.26);
+  const subtitleBlockY = titleBlockY + Math.round(titleSize * (Math.max(1, titleLines.length) + 0.9));
+  const ctaW = Math.round(Math.max(180, Math.min(cardW * 0.34, 320)));
+  const ctaH = Math.round(Math.max(50, h * 0.055));
+  const ctaX = cardX + Math.round(cardW * 0.08);
+  const ctaY = cardY + cardH - ctaH - Math.round(cardH * 0.12);
 
   const svgOverlay = `
     <svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="black" stop-opacity="0"/>
-          <stop offset="100%" stop-color="black" stop-opacity="0.75"/>
+        <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#0c1f33" stop-opacity="0.92"/>
+          <stop offset="100%" stop-color="#142e4a" stop-opacity="0.88"/>
         </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity="0.28"/>
+        </filter>
       </defs>
-      <rect x="0" y="${bandY}" width="${w}" height="${bandHeight}" fill="url(#fade)"/>
+      <rect x="0" y="0" width="${w}" height="${h}" fill="black" opacity="0.14"/>
+      <rect x="${cardX}" y="${cardY}" width="${cardW}" height="${cardH}" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+      <rect x="${cardX + Math.round(cardW * 0.08)}" y="${cardY + Math.round(cardH * 0.11)}" width="${Math.round(cardW * 0.33)}" height="${Math.round(cardH * 0.08)}" rx="8" fill="#23b26d" opacity="0.95"/>
+      <text font-family="Arial, Helvetica, sans-serif" font-size="${badgeSize}" font-weight="700" fill="white" x="${cardX + Math.round(cardW * 0.11)}" y="${cardY + Math.round(cardH * 0.17)}">NEW CAMPAIGN</text>
       <text
         font-family="Arial, Helvetica, sans-serif"
-        font-size="${fontSize}"
-        font-weight="bold"
+        font-size="${titleSize}"
+        font-weight="800"
         fill="white"
-        text-anchor="middle"
+        text-anchor="start"
         dominant-baseline="middle"
-        x="${w / 2}"
-        y="${bandY + bandHeight / 2}"
-      >${textSvg}</text>
+        x="${cardX + Math.round(cardW * 0.08)}"
+        y="${titleBlockY}"
+      >${titleSvg}</text>
+      <text
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="${subtitleSize}"
+        font-weight="500"
+        fill="white"
+        opacity="0.92"
+        text-anchor="start"
+        dominant-baseline="middle"
+        x="${cardX + Math.round(cardW * 0.08)}"
+        y="${subtitleBlockY}"
+      >${subtitleSvg}</text>
+      <rect x="${ctaX}" y="${ctaY}" width="${ctaW}" height="${ctaH}" rx="12" fill="#ffffff"/>
+      <text font-family="Arial, Helvetica, sans-serif" font-size="${Math.round(subtitleSize * 0.94)}" font-weight="800" fill="#10263d" text-anchor="middle" dominant-baseline="middle" x="${ctaX + ctaW / 2}" y="${ctaY + ctaH / 2}">${escapeXml(cta)}</text>
+      ${brand ? `<text font-family="Arial, Helvetica, sans-serif" font-size="${Math.round(subtitleSize * 0.86)}" font-weight="700" fill="white" opacity="0.82" x="${ctaX + ctaW + 18}" y="${ctaY + ctaH / 2}">${escapeXml(brand)}</text>` : ""}
     </svg>
   `;
 

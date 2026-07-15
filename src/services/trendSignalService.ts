@@ -525,11 +525,20 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
       : signal.source === "google_news"
       ? -3
       : 0;
+  const intentPenalty =
+    (nicheTokens.size > 0 && nicheScore === 0 ? 22 : 0) +
+    (contextTokens.size > 0 && brandScore === 0 ? 18 : 0);
   const freshnessBoost = signal.publishedAt
     ? Math.max(0, 10 - Math.floor((Date.now() - new Date(signal.publishedAt).getTime()) / (1000 * 60 * 60 * 3)))
     : 0;
   const relevance = Math.round(
-    Math.min(100, nicheScore * 0.28 + brandScore * 0.42 + signal.velocityScore * 0.24 + platformBoost + sourceBoost + freshnessBoost)
+    Math.max(
+      0,
+      Math.min(
+        100,
+        nicheScore * 0.28 + brandScore * 0.42 + signal.velocityScore * 0.24 + platformBoost + sourceBoost + freshnessBoost - intentPenalty
+      )
+    )
   );
   return {
     ...signal,
@@ -546,6 +555,7 @@ function computeRelevance(signal: DiscoverySignal, contextTokens: Set<string>, n
       `platform_boost:${platformBoost}`,
       `source_boost:${sourceBoost}`,
       `freshness_boost:${freshnessBoost}`,
+      `intent_penalty:${intentPenalty}`,
     ],
   };
 }
@@ -669,10 +679,18 @@ export async function discoverTrendSignals(params: {
 
     if (params.platform === "linkedin") {
       const hasBusinessFit = (signal.nicheScore ?? 0) > 0 || (signal.brandScore ?? 0) > 0;
-      const trustedLinkedinSources = ["hackernews", "producthunt", "devto", "reddit", "google_news"];
+      const trustedLinkedinSources = ["hackernews", "producthunt", "devto", "reddit", "google_news", "platform_pulse", "google_trends"];
       if (!hasBusinessFit && !trustedLinkedinSources.includes(signal.source)) {
         return false;
       }
+
+      if (!hasBusinessFit && ["mastodon"].includes(signal.source)) {
+        return false;
+      }
+    }
+
+    if (hasIntentSignals && (signal.nicheScore ?? 0) === 0 && (signal.brandScore ?? 0) === 0 && signal.source !== "platform_pulse") {
+      return false;
     }
 
     return true;

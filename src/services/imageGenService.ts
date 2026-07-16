@@ -51,45 +51,62 @@ function falSizeForDimensions(width?: number, height?: number): string {
   return width >= 1024 ? "square_hd" : "square";
 }
 
-async function generateImageFal(imageDirection: string, options?: ImageGenerationOptions): Promise<string> {
+async function generateImageFal(
+  imageDirection: string,
+  options?: ImageGenerationOptions
+): Promise<{ url: string; model: string }> {
   if (!env.falApiKey) {
     throw new Error("FAL_KEY is not configured");
   }
 
-  const result = await retryWithBackoff(
-    () =>
-      withTimeout(
-        fal.subscribe("fal-ai/flux/dev", {
-          input: {
-            prompt: imageDirection,
-            image_size: falSizeForDimensions(options?.width, options?.height) as any,
-            num_inference_steps: 28,
-            guidance_scale: 3.5,
-            enable_safety_checker: true,
-          },
-        }).then((res: any) => res.data),
-        25000,
-        "fal.ai image generation"
-      ),
-    1,
-    1200,
-    (err: any) => {
-      if (err instanceof Error) {
-        const msg = err.message || "";
-        if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
-        if (msg.includes("503") || msg.includes("overloaded")) return true;
-      }
-      return false;
-    }
-  );
+  const models = ["fal-ai/flux/dev", "fal-ai/flux/schnell"] as const;
+  const errors: string[] = [];
 
-  const url = result?.images?.[0]?.url;
-  if (!url || typeof url !== "string") {
-    throw new Error("fal.ai returned no image URL: " + JSON.stringify(result));
+  for (const model of models) {
+    try {
+      const result = await retryWithBackoff(
+        () =>
+          withTimeout(
+            fal
+              .subscribe(model, {
+                input: {
+                  prompt: imageDirection,
+                  image_size: falSizeForDimensions(options?.width, options?.height) as any,
+                  num_inference_steps: 28,
+                  guidance_scale: 3.5,
+                  enable_safety_checker: true,
+                },
+              })
+              .then((res: any) => res.data),
+            25000,
+            `fal.ai image generation (${model})`
+          ),
+        1,
+        1200,
+        (err: any) => {
+          if (err instanceof Error) {
+            const msg = err.message || "";
+            if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
+            if (msg.includes("503") || msg.includes("overloaded")) return true;
+          }
+          return false;
+        }
+      );
+
+      const url = result?.images?.[0]?.url;
+      if (!url || typeof url !== "string") {
+        throw new Error("fal.ai returned no image URL: " + JSON.stringify(result));
+      }
+
+      await validateGeneratedImageUrl(url, options);
+      return { url, model };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      errors.push(`${model}: ${message}`);
+    }
   }
 
-  await validateGeneratedImageUrl(url, options);
-  return url;
+  throw new Error(`FAL failed on all models. ${errors.join(" | ")}`);
 }
 
 // ── Replicate (fallback) ──────────────────────────────────
@@ -183,11 +200,11 @@ export async function generateImage(imageDirection: string, options?: ImageGener
   let falErr: unknown = null;
   let replicateErr: unknown = null;
   try {
-    const url = await generateImageFal(imageDirection, options);
+    const falImage = await generateImageFal(imageDirection, options);
     return {
-      url,
+      url: falImage.url,
       provider: "fal",
-      model: "fal-ai/flux/dev",
+      model: falImage.model,
     };
   } catch (falError) {
     falErr = falError;

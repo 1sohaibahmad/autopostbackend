@@ -103,6 +103,11 @@ async function generateImageReplicate(imageDirection: string, options?: ImageGen
     throw new Error("REPLICATE_API_TOKEN is not configured");
   }
 
+  const requestedWidth = options?.width ?? 1080;
+  const requestedHeight = options?.height ?? 1350;
+  const width = Math.max(512, Math.round(requestedWidth / 8) * 8);
+  const height = Math.max(512, Math.round(requestedHeight / 8) * 8);
+
   const output = await retryWithBackoff(
     () =>
       withTimeout(
@@ -113,8 +118,8 @@ async function generateImageReplicate(imageDirection: string, options?: ImageGen
               "cartoon, anime, illustration, lowres, blurry, deformed face, malformed hands, extra fingers, watermark, logo, text, celebrity likeness, trademarked character",
             num_inference_steps: 34,
             guidance_scale: 7,
-            width: options?.width ?? 1080,
-            height: options?.height ?? 1350,
+            width,
+            height,
           },
         }),
         18000,

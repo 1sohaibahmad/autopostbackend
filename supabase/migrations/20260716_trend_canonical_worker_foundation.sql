@@ -108,42 +108,48 @@ alter table public.trend_embeddings enable row level security;
 alter table public.trend_momentum_windows enable row level security;
 alter table public.trend_ingestion_runs enable row level security;
 
-create policy "Users manage own trend clusters"
+DROP POLICY IF EXISTS "Users manage own trend clusters" ON public.trend_clusters;
+CREATE POLICY "Users manage own trend clusters"
 on public.trend_clusters
 for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-create policy "Users manage own canonical trends"
+DROP POLICY IF EXISTS "Users manage own canonical trends" ON public.trends;
+CREATE POLICY "Users manage own canonical trends"
 on public.trends
 for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-create policy "Users manage own trend source signals"
+DROP POLICY IF EXISTS "Users manage own trend source signals" ON public.trend_source_signals;
+CREATE POLICY "Users manage own trend source signals"
 on public.trend_source_signals
 for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-create policy "Users manage own trend embeddings"
+DROP POLICY IF EXISTS "Users manage own trend embeddings" ON public.trend_embeddings;
+CREATE POLICY "Users manage own trend embeddings"
 on public.trend_embeddings
 for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-create policy "Users manage own trend momentum windows"
+DROP POLICY IF EXISTS "Users manage own trend momentum windows" ON public.trend_momentum_windows;
+CREATE POLICY "Users manage own trend momentum windows"
 on public.trend_momentum_windows
 for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
-create policy "Users view own trend ingestion runs"
+DROP POLICY IF EXISTS "Users view own trend ingestion runs" ON public.trend_ingestion_runs;
+CREATE POLICY "Users view own trend ingestion runs"
 on public.trend_ingestion_runs
 for all
 to authenticated

@@ -1,5 +1,7 @@
-import { falCompletion } from "./falTextService";
+import OpenAI from "openai";
 import { env } from "../config/env";
+
+const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
 export async function retryWithBackoff<T>(
   fn: () => Promise<T>,
@@ -66,13 +68,27 @@ interface TrendBriefResult {
 }
 
 async function createJsonCompletion(prompt: string): Promise<string> {
-  let cleaned = await falCompletion(prompt, {
-    model: "google/gemini-2.5-flash-lite",
-    temperature: 0.45,
-    timeoutMs: 12000,
-    maxRetries: 1,
-  });
+  const result = await retryWithBackoff(
+    () =>
+      openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.45,
+        stream: false,
+      }, { timeout: 12000 }),
+    1,
+    700,
+    (err) => {
+      if (err instanceof Error) {
+        const msg = err.message || "";
+        if (msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("rate_limit")) return true;
+        if (msg.includes("503") || msg.includes("overloaded")) return true;
+      }
+      return false;
+    }
+  );
 
+  let cleaned = (result.choices[0]?.message?.content ?? "").trim();
   if (cleaned.startsWith("```json")) cleaned = cleaned.slice(7);
   if (cleaned.startsWith("```")) cleaned = cleaned.slice(3);
   if (cleaned.endsWith("```")) cleaned = cleaned.slice(0, -3);

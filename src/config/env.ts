@@ -15,7 +15,7 @@ export const env = {
   port: Number(process.env.PORT ?? 3000),
   appVersion: process.env.APP_VERSION ?? "0.1.0",
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
-  openAiApiKey: process.env.OPENAI_API_KEY ?? "",
+  openAiApiKey: required("OPENAI_API_KEY"),
   replicateApiToken: process.env.REPLICATE_API_TOKEN,
   falApiKey: process.env.FAL_KEY,
   supabaseUrl: required("SUPABASE_URL"),

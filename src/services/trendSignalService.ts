@@ -1,10 +1,11 @@
 import { HttpError } from "../lib/httpError";
 import { supabase } from "../lib/supabase";
 import { getBrandProfileForUserById } from "./brandProfileService";
-import { falCompletion } from "./falTextService";
+import OpenAI from "openai";
 import { env } from "../config/env";
 import { canonicalizeSignalsForUser } from "./trendCanonicalService";
 
+const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
 type DiscoverySignal = {
   source: string;
@@ -94,11 +95,13 @@ Rules:
 `;
 
   try {
-    const raw = await falCompletion(prompt, {
-      model: "google/gemini-2.5-flash-lite",
+    const result = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
       temperature: 0.2,
     });
 
+    const raw = (result.choices[0]?.message?.content ?? "").trim();
     const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
     const parsed = JSON.parse(cleaned) as { ranked?: Array<{ index: number; score: number; reason?: string; imagePromptHint?: string }> };
     const ranked = parsed.ranked ?? [];

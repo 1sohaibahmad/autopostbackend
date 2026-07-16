@@ -1,19 +1,29 @@
-import { falCompletion } from "./falTextService";
+import OpenAI from "openai";
 import { env } from "../config/env";
+
+const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
 export async function extractImageContentContext(params: { imageUrl: string; focus?: string }) {
   const focus = params.focus?.trim() || "Extract social-content-relevant details for post generation.";
 
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.2,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `${focus}\nReturn only JSON with keys: summary, objects, textDetected, colors, mood, contentIdeas (max 3).` },
+          { type: "image_url", image_url: { url: params.imageUrl } },
+        ],
+      },
+    ],
+  });
+
+  const raw = (completion.choices[0]?.message?.content ?? "").trim();
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+
   try {
-    const prompt = `${focus}\nAnalyze the image at this URL: ${params.imageUrl}\nReturn only JSON with keys: summary, objects, textDetected, colors, mood, contentIdeas (max 3).`;
-
-    const raw = await falCompletion(prompt, {
-      model: "google/gemini-2.5-flash-lite",
-      temperature: 0.2,
-      timeoutMs: 12000,
-    });
-
-    const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
     const parsed = JSON.parse(cleaned) as {
       summary?: string;
       objects?: string[];
@@ -32,7 +42,7 @@ export async function extractImageContentContext(params: { imageUrl: string; foc
     };
   } catch {
     return {
-      summary: "Image analysis unavailable",
+      summary: cleaned,
       objects: [],
       textDetected: [],
       colors: [],

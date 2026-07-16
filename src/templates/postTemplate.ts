@@ -1,18 +1,21 @@
-export interface PostTemplateData {
-  headline: string;
-  subtext?: string;
-  brandColors: string[];
-  brandLogo?: string | null;
-  brandName: string;
-  backgroundImageUrl: string;
-}
+ export interface PostTemplateData {
+   headline: string;
+   subtext?: string;
+   brandColors: string[];
+   brandLogo?: string | null;
+   brandName: string;
+   backgroundImageUrl: string;
+   features?: string[];
+   ctaText?: string;
+ }
 
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function darken(hex: string, amount: number): string {

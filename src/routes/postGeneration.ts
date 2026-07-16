@@ -15,9 +15,13 @@ router.post("/generate-post", requireAuth, validateRequest({ body: generatePostS
       postType: req.body.postType,
       topic: req.body.topic,
       tone: req.body.tone,
+      objective: req.body.objective,
+      audienceSegment: req.body.audienceSegment,
+      proofPoints: req.body.proofPoints,
       customHeadline: req.body.customHeadline,
       trendBriefId: req.body.trendBriefId,
       trendSignalIds: req.body.trendSignalIds,
+      refinementInstruction: req.body.refinementInstruction,
       generationMode: req.body.generationMode,
     });
 

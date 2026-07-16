@@ -43,8 +43,11 @@ async function validateGeneratedImageUrl(url: string, options?: ImageGenerationO
 // ── fal.ai (primary) ─────────────────────────────────────
 function falSizeForDimensions(width?: number, height?: number): string {
   if (!width || !height) return "portrait_4_3";
-  if (width > height) return height <= 720 ? "landscape_16_9" : "landscape_4_3";
-  if (height > width) return width <= 720 ? "portrait_16_9" : "portrait_4_3";
+  const ratio = width / height;
+  if (ratio > 1.3) return "landscape_16_9";
+  if (ratio > 1.05) return "landscape_4_3";
+  if (ratio < 0.6) return "portrait_16_9";
+  if (ratio < 0.8) return "portrait_4_3";
   return width >= 1024 ? "square_hd" : "square";
 }
 
@@ -216,6 +219,7 @@ export async function addTextOverlay(
     subtitle?: string;
     cta?: string;
     brandName?: string;
+    badge?: string;
   }
 ): Promise<Buffer> {
   const response = await fetch(imageUrl);
@@ -248,6 +252,7 @@ export async function addTextOverlay(
   const subtitleLines = wrapText(subtitle, Math.round(cardW * 0.84), subtitleSize).slice(0, 2);
   const cta = (options?.cta?.trim() || "Learn More").slice(0, 28).toUpperCase();
   const brand = (options?.brandName?.trim() || "").slice(0, 38).toUpperCase();
+  const badge = (options?.badge?.trim() || "NEW POST").slice(0, 24).toUpperCase();
 
   const titleSvg = titleLines
     .map(
@@ -284,7 +289,7 @@ export async function addTextOverlay(
       <rect x="0" y="0" width="${w}" height="${h}" fill="black" opacity="0.14"/>
       <rect x="${cardX}" y="${cardY}" width="${cardW}" height="${cardH}" rx="24" fill="url(#card)" filter="url(#shadow)"/>
       <rect x="${cardX + Math.round(cardW * 0.08)}" y="${cardY + Math.round(cardH * 0.11)}" width="${Math.round(cardW * 0.33)}" height="${Math.round(cardH * 0.08)}" rx="8" fill="#23b26d" opacity="0.95"/>
-      <text font-family="Arial, Helvetica, sans-serif" font-size="${badgeSize}" font-weight="700" fill="white" x="${cardX + Math.round(cardW * 0.11)}" y="${cardY + Math.round(cardH * 0.17)}">NEW CAMPAIGN</text>
+      <text font-family="Arial, Helvetica, sans-serif" font-size="${badgeSize}" font-weight="700" fill="white" x="${cardX + Math.round(cardW * 0.11)}" y="${cardY + Math.round(cardH * 0.17)}">${escapeXml(badge)}</text>
       <text
         font-family="Arial, Helvetica, sans-serif"
         font-size="${titleSize}"

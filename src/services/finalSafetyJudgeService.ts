@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { env } from "../config/env";
+import { retryWithBackoff } from "./textGenService";
 
 const openai = new OpenAI({ apiKey: env.openAiApiKey });
 
@@ -66,12 +67,25 @@ JSON schema:
 }`;
 
   try {
-    const result = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
-      stream: false,
-    }, { timeout: 8000 });
+    const result = await retryWithBackoff(
+      () =>
+        openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0,
+          stream: false,
+        }, { timeout: 10000 }),
+      1,
+      800,
+      (err) => {
+        if (err instanceof Error) {
+          const msg = err.message || "";
+          if (msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("rate_limit")) return true;
+          if (msg.includes("503") || msg.includes("overloaded")) return true;
+        }
+        return false;
+      }
+    );
 
     const raw = (result.choices[0]?.message?.content ?? "").trim();
     const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```/, "").replace(/```$/, "").trim();
@@ -102,16 +116,16 @@ JSON schema:
     };
   } catch {
     return {
-      passed: true,
-      score: 72,
+      passed: false,
+      score: 0,
       issues: [
         {
           category: "policy",
-          severity: "low",
-          message: "Final safety judge timed out; fallback review applied.",
+          severity: "medium",
+          message: "Final safety judge unavailable; content blocked pending manual review.",
         },
       ],
-      rationale: "Judge timeout fallback used to prevent request stall.",
+      rationale: "Judge failed — defaulting to BLOCK to prevent unsafe content from publishing.",
       rawModel: "gpt-4o-mini",
     };
   }

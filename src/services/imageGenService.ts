@@ -139,20 +139,21 @@ async function generateImageReplicate(imageDirection: string, options?: ImageGen
             height,
           },
         }),
-        18000,
+        90000,
         "replicate image generation"
       ),
     1,
     900,
     (err) => {
-      if (err instanceof Error) {
-        const msg = err.message || "";
-        if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
-        if (msg.includes("503") || msg.includes("overloaded")) return true;
-        if (msg.includes("Director") || msg.includes("unexpected error handling prediction")) return true;
+        if (err instanceof Error) {
+          const msg = err.message || "";
+          if (msg.includes("429") || msg.includes("Too Many Requests")) return true;
+          if (msg.includes("503") || msg.includes("overloaded")) return true;
+          if (msg.includes("timed out")) return true;
+          if (msg.includes("Director") || msg.includes("unexpected error handling prediction")) return true;
+        }
+        return false;
       }
-      return false;
-    }
   );
 
   let finalUrl: string | undefined;

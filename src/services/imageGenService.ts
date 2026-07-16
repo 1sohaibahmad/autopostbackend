@@ -175,6 +175,8 @@ export interface GeneratedImage {
 
 export async function generateImage(imageDirection: string, options?: ImageGenerationOptions): Promise<GeneratedImage> {
   // 1. Try fal.ai first
+  let falErr: unknown = null;
+  let replicateErr: unknown = null;
   try {
     const url = await generateImageFal(imageDirection, options);
     return {
@@ -183,6 +185,7 @@ export async function generateImage(imageDirection: string, options?: ImageGener
       model: "fal-ai/flux/dev",
     };
   } catch (falError) {
+    falErr = falError;
     // 2. Fall back to Replicate if available
     if (replicate) {
       try {
@@ -193,14 +196,19 @@ export async function generateImage(imageDirection: string, options?: ImageGener
           model: "stability-ai/sdxl",
         };
       } catch (replicateError) {
-        // continue to Pollinations below
+        replicateErr = replicateError;
       }
     }
 
     // 3. Last resort: Pollinations (only if allowed)
     if (!env.allowLowQualityImageFallback) {
-      const primaryErr = falError instanceof Error ? falError.message : "unknown error";
-      throw new Error(`Primary image providers unavailable: ${primaryErr}`);
+      const falMsg = falErr instanceof Error ? falErr.message : "unknown FAL error";
+      const replicateMsg = replicate
+        ? replicateErr instanceof Error
+          ? replicateErr.message
+          : "unknown Replicate error"
+        : "REPLICATE_API_TOKEN is not configured";
+      throw new Error(`Primary image providers unavailable. fal=${falMsg}; replicate=${replicateMsg}`);
     }
     const fallbackUrl = generateImagePollinations(imageDirection, options);
     await validateGeneratedImageUrl(fallbackUrl, options);

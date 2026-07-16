@@ -27,12 +27,10 @@ function getUtcDayWindow(now = new Date()): { start: string; end: string } {
 async function enforceDailyPostLimit(userId: string): Promise<void> {
   const window = getUtcDayWindow();
 
-  const { count, error } = await supabase
-    .from("generations")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .gte("created_at", window.start)
-    .lt("created_at", window.end);
+  const { data: allowed, error } = await supabase.rpc("check_daily_generation_limit", {
+    p_user_id: userId,
+    p_limit: DAILY_POST_LIMIT,
+  });
 
   if (error) {
     throw new HttpError(500, "Failed to verify daily post usage", "USAGE_LIMIT_CHECK_FAILED", {
@@ -40,11 +38,17 @@ async function enforceDailyPostLimit(userId: string): Promise<void> {
     });
   }
 
-  const generatedToday = count ?? 0;
-  if (generatedToday >= DAILY_POST_LIMIT) {
+  if (allowed === false) {
+    const { count } = await supabase
+      .from("generations")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", window.start)
+      .lt("created_at", window.end);
+
     throw new HttpError(429, `Daily generation limit reached (${DAILY_POST_LIMIT} posts/day)`, "DAILY_POST_LIMIT_REACHED", {
       limit: DAILY_POST_LIMIT,
-      generatedToday,
+      generatedToday: count ?? DAILY_POST_LIMIT,
       windowStartUtc: window.start,
       windowEndUtc: window.end,
     });
@@ -156,8 +160,15 @@ function extractUnsafeReferences(issues: Array<{ message: string }>): string[] {
     }
 
     const brandLike = issue.message.match(/\b([A-Z][A-Za-z0-9&-]{2,30})\b/g) ?? [];
+    const blocklist = new Set([
+      "Reference", "The", "Additionally", "Topic", "Platform", "Brand",
+      "This", "That", "These", "Those", "However", "Therefore", "Moreover",
+      "Furthermore", "Image", "Caption", "Post", "Content", "Direction",
+      "Generic", "Severity", "Category", "Policy", "Warning", "Note",
+      "Consider", "Avoid", "Ensure", "Check", "Review", "Analysis",
+    ]);
     for (const token of brandLike.slice(0, 4)) {
-      if (!["Reference", "The", "Additionally", "Topic", "Platform", "Brand"].includes(token)) {
+      if (!blocklist.has(token)) {
         tokens.add(token.trim());
       }
     }
